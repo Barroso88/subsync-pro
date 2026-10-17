@@ -401,6 +401,21 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         result: dict
         target: str
 
+    class BazarrReq(BaseModel):
+        language: str
+
+    class BazarrBatch(BaseModel):
+        media_ids: list[int]
+        languages: list[str] | None = None
+
+    @api.post("/media/{mid}/bazarr")
+    def bazarr_one(mid: int, b: BazarrReq):
+        return core.bazarr_request(mid, b.language)
+
+    @api.post("/batch/bazarr", status_code=202)
+    def bazarr_batch(b: BazarrBatch):
+        return {"job_id": core.start_bazarr_batch(b.media_ids, b.languages)}
+
     @api.get("/translation")
     def translation_status():
         return core.translation_status()
@@ -523,13 +538,13 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def integrations():
         s = core.settings.all()
         out = {}
-        for n, key in (("plex", "plex_token"), ("radarr", "radarr_api_key"), ("sonarr", "sonarr_api_key")):
+        for n, key in (("plex", "plex_token"), ("radarr", "radarr_api_key"), ("sonarr", "sonarr_api_key"), ("bazarr", "bazarr_api_key")):
             out[n] = {**s[n], "secret_set": bool(core.secrets.get(key)), "secret_source": core.secrets.source(key), "secret_key": key}
         return out
 
     @api.post("/integrations/{name}/test")
     def integration_test(name: str):
-        if name not in ("plex", "radarr", "sonarr"):
+        if name not in ("plex", "radarr", "sonarr", "bazarr"):
             raise HTTPException(404)
         return core.test_integration(name)
 
@@ -559,7 +574,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
             if not isinstance(v, list) or any(not isinstance(i, dict) or i.get("priority") not in ("primary", "secondary")
                                                or (i.get("code") not in L and i.get("code") not in extra) for i in v):
                 raise HTTPException(400, "Lista de idiomas inválida")
-        elif k in ("plex", "radarr", "sonarr"):
+        elif k in ("plex", "radarr", "sonarr", "bazarr"):
             if v.get("url"):
                 try:
                     validate_service_url(v["url"])

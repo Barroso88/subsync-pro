@@ -192,18 +192,21 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
 
 export function BatchModal({ open, ids, languages, onClose, onStarted }: { open: boolean; ids: number[]; languages?: string[]; onClose: () => void; onStarted: () => void }) {
   const [install, setInstall] = useState(false);
+  const [via, setVia] = useState<"app" | "bazarr">("app");
+  const integ = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Record<string, any>>("/integrations"), enabled: open });
+  const bazarrOk = !!integ.data?.bazarr?.enabled && !!integ.data?.bazarr?.secret_set;
   const meta = useMeta();
   const start = useStartJob();
   const pv = useQuery({ queryKey: ["batch-preview", ids, languages], queryFn: () => api.post<any>("/batch/preview", { media_ids: ids, languages }), enabled: open && ids.length > 0 });
   const canWrite = (meta.data?.writable_roots.length ?? 0) > 0;
-  useEffect(() => { if (open) setInstall(false); }, [open]);
+  useEffect(() => { if (open) { setInstall(false); setVia("app"); } }, [open]);
   const p = pv.data;
   return (
     <Modal open={open} onClose={onClose} title="Procurar legendas em lote"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Cancelar</button>
         <button className="btn-primary" disabled={!p || !p.needing_subtitles || start.isPending}
-          onClick={() => start.mutate({ url: "/batch", body: { media_ids: ids, languages, install, min_tier: "probable" } }, { onSuccess: onStarted })}>
+          onClick={() => start.mutate(via === "bazarr" ? { url: "/batch/bazarr", body: { media_ids: ids, languages } } : { url: "/batch", body: { media_ids: ids, languages, install, min_tier: "probable" } }, { onSuccess: onStarted })}>
           {start.isPending && <Loader2 size={14} className="animate-spin" />}Confirmar e iniciar
         </button>
       </>}>
@@ -223,12 +226,20 @@ export function BatchModal({ open, ids, languages, onClose, onStarted }: { open:
               {f.configured ? `${f.downloads_today}${f.daily_limit ? ` / ${f.daily_limit}` : ""} downloads hoje` : "sem credenciais"}
             </div>
           ))}
-          <div className="rounded-lg border border-line p-3.5 space-y-2.5 bg-s2/50">
+          {bazarrOk && (
+            <div className="rounded-lg border border-line p-3.5 space-y-2 bg-s2/50">
+              <div className="label">Pesquisar com</div>
+              <label className="flex items-start gap-2 text-sm cursor-pointer"><input type="radio" className="mt-1 accent-[rgb(229,160,13)]" checked={via === "app"} onChange={() => setVia("app")} /><span>Esta app <span className="text-xs text-mute block">OpenSubtitles / SubDL, com avaliação e confirmação</span></span></label>
+              <label className="flex items-start gap-2 text-sm cursor-pointer"><input type="radio" className="mt-1 accent-[rgb(229,160,13)]" checked={via === "bazarr"} onChange={() => setVia("bazarr")} /><span>Bazarr <span className="text-xs text-mute block">usa os fornecedores dele (ex.: LegendasDivx); grava diretamente nas pastas e só funciona em filmes com id do Radarr, em bibliotecas com escrita. Um filme de cada vez (lento).</span></span></label>
+            </div>
+          )}
+          {via === "app" && <div className="rounded-lg border border-line p-3.5 space-y-2.5 bg-s2/50">
             <Toggle checked={install} onChange={setInstall} disabled={!canWrite}
               label="Instalar automaticamente as melhores legendas"
               hint={canWrite ? "Só instala resultados com compatibilidade provável ou confirmada por hash, sem conflitos. Nunca substitui ficheiros." : "Nenhuma biblioteca tem escrita autorizada."} />
             {!install && <div className="text-xs text-mute">Modo seguro: as melhores candidatas são descarregadas e ficam <b className="text-fg">por confirmar</b> em Histórico de downloads.</div>}
-          </div>
+          </div>}
+          {via === "bazarr" && <div className="text-xs text-warn border border-warn/30 bg-warn/5 rounded-lg p-3">O Bazarr grava as legendas diretamente (não há passo «por confirmar»). A app valida cada resultado depois e não conta ficheiros vazios ou inválidos como cobertura.</div>}
           <div className="text-xs text-dim">A tarefa corre em segundo plano, respeita os limites do fornecedor e pode ser cancelada em Tarefas.</div>
         </div>
       )}

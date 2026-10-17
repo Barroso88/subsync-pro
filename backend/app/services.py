@@ -18,6 +18,7 @@ from .db import Database, jloads, rows
 from .evaluator import Evaluation, evaluate_content, evaluate_metadata
 from .installer import (InstallConflict, InvalidDownload, build_dest_name, install, plan_install, stage, validate_download)
 from .integrations.arr import Arr
+from .integrations.bazarr import Bazarr
 from .integrations.common import IntegrationError, map_remote_to_local
 from .integrations.plex import Plex
 from .jobs import JobCancelled, JobContext, JobManager
@@ -63,6 +64,7 @@ class App:
         self.jobs.register("refresh_plex", self._job_refresh_plex)
         self.jobs.register("revalidate", self._job_revalidate)
         self.jobs.register("webhook_import", self._job_webhook_import)
+        self.jobs.register("bazarr_batch", self._job_bazarr_batch)
 
     # ---- ciclo de vida -----------------------------------------------------
     def start(self) -> None:
@@ -174,6 +176,8 @@ class App:
             return None
         if name == "plex":
             return Plex(cfg["url"], self.secrets.get("plex_token"), cfg.get("path_mappings", []), self.transport)
+        if name == "bazarr":
+            return Bazarr(cfg["url"], self.secrets.get("bazarr_api_key"), self.transport)
         return Arr(name, cfg["url"], self.secrets.get(f"{name}_api_key"), cfg.get("path_mappings", []), self.transport)
 
     def test_integration(self, name: str) -> dict:
@@ -836,6 +840,74 @@ class App:
             res["searched"] = True
         ctx.step(os.path.basename(real), message="concluído", force=True)
         return res
+
+    # ---- Bazarr: pedir-lhe que procure/descarregue (inclui os fornecedores dele, ex.: LegendasDivx) ----
+    def bazarr_request(self, media_id: int, lang: str) -> dict:
+        svc = self._integration("bazarr")
+        if svc is None:
+            raise ServiceError("Integração com o Bazarr desativada (Definições → Bazarr).", 400)
+        media = self.media_dict(media_id)
+        if media["kind"] != "movie" or not media.get("radarr_id"):
+            raise ServiceError("Só filmes com id do Radarr (sincronize os metadados do Radarr).", 422)
+        lib = self.db.one("SELECT * FROM libraries WHERE id=?", (media["library_id"],))
+        if not any(l["id"] == media["library_id"] and l["effective_write"] for l in self.libraries()):
+            raise ServiceError("A biblioteca deste filme está em modo só de leitura: não se pede ao Bazarr que escreva nela.", 403)
+        had = lang in cov.compute(self.db, self.settings, [media_id])[media_id]["covered"]
+        try:
+            r = svc.download_movie_subtitle(media["radarr_id"], lang)
+        except IntegrationError as e:
+            add_event(self.db, "bazarr", f"Bazarr ({media['title']}, {lang}): {e}", "warning", media_id)
+            raise ServiceError(str(e), 502)
+        try:  # a app valida o resultado: reanalisa só a pasta do filme
+            self.scanner.scan_library(dict(lib), None, media["dir"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("reanálise após Bazarr: %s", scrub(str(e)))
+        now_cov = cov.compute(self.db, self.settings, [media_id])[media_id]
+        found = lang in now_cov["covered"] and not had
+        msg = ("Legenda encontrada e validada." if found else
+               "O Bazarr não obteve nenhuma legenda nova." if r.get("ok") else f"O Bazarr não encontrou: {r.get('message')}")
+        add_event(self.db, "bazarr", f"Bazarr ({media['title']}, {lang}): {msg}", "info" if found else "warning", media_id)
+        if self.settings.get("notify_plex_after_install") and found:
+            try:
+                self.refresh_plex(media_id)
+            except IntegrationError:
+                pass
+        return {"media_id": media_id, "lang": lang, "found": found, "message": msg, "had_before": had}
+
+    def start_bazarr_batch(self, media_ids: list[int], languages: list[str] | None) -> int:
+        if not media_ids:
+            raise ServiceError("Nenhum item selecionado.")
+        if self._integration("bazarr") is None:
+            raise ServiceError("Integração com o Bazarr desativada.", 400)
+        return self.jobs.submit("bazarr_batch", f"Pedir legendas ao Bazarr ({len(media_ids)} filmes)",
+                                {"media_ids": media_ids, "languages": languages})
+
+    def _job_bazarr_batch(self, ctx: JobContext, p: dict) -> dict:
+        ids = p["media_ids"]
+        ctx.set_total(len(ids))
+        c = cov.compute(self.db, self.settings, ids)
+        out = {"found": 0, "not_found": 0, "skipped": 0, "errors": 0, "details": []}
+        for mid in ids:
+            ctx.check_cancel()
+            m = self.db.one("SELECT title FROM media_items WHERE id=?", (mid,))
+            ctx.step(m["title"] if m else str(mid), message=f"{out['found']} encontradas · {out['not_found']} sem resultado")
+            want = [l for l in (p.get("languages") or c.get(mid, {}).get("missing") or []) if l not in c.get(mid, {}).get("covered", {})]
+            for lang in want:
+                ctx.check_cancel()
+                try:
+                    r = self.bazarr_request(mid, lang)
+                    out["found" if r["found"] else "not_found"] += 1
+                except ServiceError as e:
+                    if e.status in (400, 403, 422):
+                        out["skipped"] += 1
+                    else:
+                        out["errors"] += 1
+                    if len(out["details"]) < 40:
+                        out["details"].append({"media_id": mid, "lang": lang, "error": str(e)})
+                    if "recusou a API key" in str(e) or "desativada" in str(e):
+                        raise
+        add_event(self.db, "bazarr", f"Lote Bazarr: {out['found']} encontradas, {out['not_found']} sem resultado, {out['errors']} erros.")
+        return out
 
     # ---- legendas vazias (listar / apagar com salvaguardas) --------------------
     def _empty_rows(self, q: str | None = None, lang: str | None = None) -> list[dict]:

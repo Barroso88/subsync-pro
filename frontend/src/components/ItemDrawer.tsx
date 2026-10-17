@@ -9,7 +9,7 @@ import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
 import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "./subs";
 
 interface Detail extends Item {
-  dir: string; size: number; subtitles: Sub[]; downloads: Download[]; moviehash: string | null; library_writable: boolean; probe_status: string;
+  dir: string; size: number; radarr_id?: number | null; subtitles: Sub[]; downloads: Download[]; moviehash: string | null; library_writable: boolean; probe_status: string;
 }
 interface SearchRes { results: Candidate[]; errors: { provider: string; message: string; auth?: boolean; rate_limited?: boolean; retry_after?: number }[]; query: { languages: string[]; hash_used: boolean; tried?: string[] } }
 
@@ -121,6 +121,17 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
   const [target, setTarget] = useState<string>("");
   const [askTr, setAskTr] = useState<Candidate | null>(null);
   useEffect(() => { if (!target && targets.length) setTarget(targets[0]); }, [targets.join(",")]);
+  const bz = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Record<string, any>>("/integrations") });
+  const bazarrOn = !!bz.data?.bazarr?.enabled && !!bz.data?.bazarr?.secret_set && d.kind === "movie" && !!d.radarr_id && d.library_writable;
+  const [bzBusy, setBzBusy] = useState<string | null>(null);
+  const askBazarr = async (lang: string) => {
+    setBzBusy(lang);
+    try {
+      const r = await api.post<{ found: boolean; message: string }>(`/media/${d.id}/bazarr`, { language: lang });
+      toast(r.found ? "ok" : "warn", r.message);
+      qc.invalidateQueries();
+    } catch (e) { toast("bad", (e as Error).message); } finally { setBzBusy(null); }
+  };
   const trans = useMutation({
     mutationFn: (c: Candidate) => api.post<Download>(`/media/${d.id}/translate`, { result: c.result, target }),
     onSuccess: (r) => { setPrepared(r); setAskTr(null); qc.invalidateQueries({ queryKey: ["downloads"] }); qc.invalidateQueries({ queryKey: ["translation"] }); },
@@ -158,6 +169,15 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       {res && trOn && !tr.data?.configured && !tr.isLoading && (
         <div className="card border-warn/30 bg-warn/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-warn shrink-0 mt-0.5" />
           <div>A tradução está ativada mas falta a chave do DeepL: <Link to="/fornecedores" className="text-accent underline">Fornecedores → DeepL</Link>.</div></div>
+      )}
+      {bazarrOn && (
+        <div className="card p-3.5 space-y-2.5">
+          <div className="text-sm font-medium">Pedir ao Bazarr</div>
+          <div className="text-xs text-mute">O Bazarr procura nos fornecedores dele (ex.: LegendasDivx) e grava a legenda; a app valida-a depois. Pode demorar até um minuto.</div>
+          <div className="flex gap-2 flex-wrap">{baseLangs.filter((l) => ["pt-PT", "pt-BR", "en", "es", "fr", "de", "it"].includes(l)).map((l) => (
+            <button key={l} className="btn-ghost" disabled={bzBusy !== null} onClick={() => askBazarr(l)}>{bzBusy === l ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}{l}</button>
+          ))}</div>
+        </div>
       )}
       {res?.errors.map((e, i) => (
         <div key={i} className="card border-warn/30 p-3 text-sm flex gap-2.5"><AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" /><div><b className="font-medium">{e.provider}</b>: {e.message}{e.auth && <span className="text-mute"> — configure em Fornecedores.</span>}{e.retry_after ? ` Tente novamente em ${e.retry_after}s.` : ""}</div></div>

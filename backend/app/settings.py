@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
     "plex": {"enabled": False, "url": "", "path_mappings": []},
     "radarr": {"enabled": False, "url": "", "path_mappings": []},
     "sonarr": {"enabled": False, "url": "", "path_mappings": []},
+    "bazarr": {"enabled": False, "url": "", "path_mappings": []},
     "providers": {
         "opensubtitles": {"enabled": True, "priority": 1, "max_results": 30,
                           "requests_per_minute": 30, "daily_download_limit": 20},

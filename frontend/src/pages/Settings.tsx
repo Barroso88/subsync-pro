@@ -93,7 +93,7 @@ export default function SettingsPage() {
           </Field>
         </Section>
 
-        {(["plex", "radarr", "sonarr"] as const).map((n) => <Integration key={n} name={n} d={d} set={set} />)}
+        {(["plex", "radarr", "sonarr", "bazarr"] as const).map((n) => <Integration key={n} name={n} d={d} set={set} />)}
 
         <Section title="Segurança">
           <div className="space-y-2 text-sm">
@@ -197,13 +197,14 @@ function AddLibrary({ open, onClose }: { open: boolean; onClose: () => void }) {
   );
 }
 
-function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: Settings; set: (k: string, v: any) => void }) {
+function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr" | "bazarr"; d: Settings; set: (k: string, v: any) => void }) {
   const toast = useToast();
   const qc = useQueryClient();
   const info = useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Record<string, any>>("/integrations") });
   const [secret, setSecret] = useState("");
   const cfg = d[name];
   const secretKey = name === "plex" ? "plex_token" : `${name}_api_key`;
+  const isBazarr = name === "bazarr";
   const upd = (patch: any) => set(name, { ...cfg, ...patch });
   const saveSecret = useMutation({ mutationFn: () => api.put("/secrets", { values: { [secretKey]: secret.trim() } }), onSuccess: () => { setSecret(""); qc.invalidateQueries({ queryKey: ["integrations"] }); toast("ok", "Segredo guardado"); }, onError: (e: Error) => toast("bad", e.message) });
   const test = useMutation({
@@ -215,20 +216,20 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
     onSuccess: (r) => toast(r.ok ? "ok" : "bad", r.ok ? `Ligação OK${r.version ? ` (v${r.version})` : ""}` : r.message), onError: (e: Error) => toast("bad", e.message),
   });
   const sync = useStartJob();
-  const label = { plex: "Plex", radarr: "Radarr (filmes)", sonarr: "Sonarr (séries)" }[name];
+  const label = { plex: "Plex", radarr: "Radarr (filmes)", sonarr: "Sonarr (séries)", bazarr: "Bazarr" }[name];
   const si = info.data?.[name];
   return (
-    <Section title={label} hint="Opcional. Fornece IDs, posters e correspondência; a aplicação funciona sem esta integração."
+    <Section title={label} hint={isBazarr ? "Opcional. A app pede ao Bazarr que procure legendas (incluindo nos fornecedores dele, ex.: LegendasDivx) e valida o resultado. Requer o id do Radarr (sincronize o Radarr)." : "Opcional. Fornece IDs, posters e correspondência; a aplicação funciona sem esta integração."}
       actions={<Toggle checked={!!cfg.enabled} onChange={(v) => upd({ enabled: v })} label="Ativo" />}>
       {cfg.enabled && (
         <div className="space-y-4">
           <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="URL"><input className="input" value={cfg.url} placeholder={name === "plex" ? "http://192.168.1.10:32400" : name === "radarr" ? "http://192.168.1.10:7878" : "http://192.168.1.10:8989"} onChange={(e) => upd({ url: e.target.value })} /></Field>
+            <Field label="URL"><input className="input" value={cfg.url} placeholder={name === "plex" ? "http://192.168.1.10:32400" : name === "radarr" ? "http://192.168.1.10:7878" : name === "bazarr" ? "http://192.168.1.10:6767" : "http://192.168.1.10:8989"} onChange={(e) => upd({ url: e.target.value })} /></Field>
             <Field label={name === "plex" ? "Token" : "API key"} hint={si?.secret_set ? `Definido (${si.secret_source === "env" ? "ambiente" : "guardado"})` : "Não definido"}>
               <div className="flex gap-2"><input className="input" type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={si?.secret_set ? "•••••••• (vazio = manter)" : ""} disabled={si?.secret_source === "env"} />
                 <button className="btn-ghost" disabled={!secret || saveSecret.isPending} onClick={() => saveSecret.mutate()}>Guardar</button></div></Field>
           </div>
-          <Field label="Mapeamento de caminhos" hint="Se o serviço vê /data/movies mas esta app vê /media/Filmes, mapeie aqui (remoto → local).">
+          {!isBazarr && <Field label="Mapeamento de caminhos" hint="Se o serviço vê /data/movies mas esta app vê /media/Filmes, mapeie aqui (remoto → local).">
             <div className="space-y-2">
               {(cfg.path_mappings ?? []).map((m: any, i: number) => (
                 <div key={i} className="flex gap-2 items-center">
@@ -239,11 +240,11 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
               ))}
               <button className="btn-ghost !h-8" onClick={() => upd({ path_mappings: [...(cfg.path_mappings ?? []), { remote: "", local: "" }] })}><Plus size={14} />Adicionar mapeamento</button>
             </div>
-          </Field>
-          {name !== "plex" && <WebhookBox name={name} />}
+          </Field>}
+          {(name === "radarr" || name === "sonarr") && <WebhookBox name={name} />}
           <div className="flex gap-2 justify-end">
             <button className="btn-ghost" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending && <Loader2 size={14} className="animate-spin" />}Testar ligação</button>
-            <button className="btn-ghost" onClick={async () => { try { if (secret.trim()) { await api.put("/secrets", { values: { [secretKey]: secret.trim() } }); setSecret(""); } await api.put("/settings", { [name]: cfg }); qc.invalidateQueries({ queryKey: ["integrations"] }); sync.mutate({ url: "/integrations/sync" }); } catch (e) { toast("bad", (e as Error).message); } }}>Sincronizar metadados</button>
+            {!isBazarr && <button className="btn-ghost" onClick={async () => { try { if (secret.trim()) { await api.put("/secrets", { values: { [secretKey]: secret.trim() } }); setSecret(""); } await api.put("/settings", { [name]: cfg }); qc.invalidateQueries({ queryKey: ["integrations"] }); sync.mutate({ url: "/integrations/sync" }); } catch (e) { toast("bad", (e as Error).message); } }}>Sincronizar metadados</button>}
           </div>
         </div>
       )}

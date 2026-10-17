@@ -89,6 +89,10 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 
 No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On File Import** e **On File Upgrade** no Radarr — **On Import**/**On Upgrade** no Sonarr —, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
 
+## Bazarr (opcional)
+
+Em *Definições → Bazarr* (URL + API key do Bazarr), a app pode **pedir ao Bazarr** que procure e descarregue a legenda de um filme (botão **Pedir ao Bazarr** na ficha do filme, ou «Pesquisar com: Bazarr» no lote). O Bazarr usa os fornecedores dele (ex.: LegendasDivx, com a conta do utilizador no Bazarr) e grava o ficheiro; a app **reanalisa e valida** o resultado (um ficheiro vazio ou inválido não conta). Usa a API publicada pelo próprio Bazarr (`PATCH /api/movies/subtitles`). Requisitos: filme com id do Radarr (sincronizar metadados do Radarr), biblioteca com escrita ativa. Não há passo «por confirmar», porque quem grava é o Bazarr; o lote corre um filme de cada vez.
+
 ## Legendas vazias
 
 A página **Legendas vazias** lista ficheiros de legenda com 0 bytes (ex.: deixados por downloads falhados de outras ferramentas, que o Bazarr conta como «existentes»). Permite apagá-los em lote com confirmação. O servidor só apaga um ficheiro se, **no momento de apagar**, for uma legenda (`.srt/.ass/.ssa/.vtt/.sub/.idx`), tiver 0 bytes, não seja um atalho, e esteja numa biblioteca com **escrita ativa**. Nunca apaga vídeos nem legendas com conteúdo. É a única operação de apagar da aplicação; é sempre iniciada por si.
