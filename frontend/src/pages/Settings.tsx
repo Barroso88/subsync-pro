@@ -91,6 +91,15 @@ export default function SettingsPage() {
           </div>
         </Section>
       </div>
+      {dirty && (
+        <div className="fixed bottom-0 left-0 right-0 lg:left-[248px] z-30 border-t border-line bg-s1/95 backdrop-blur px-4 sm:px-8 py-3 flex items-center justify-between gap-3 animate-rise">
+          <span className="text-sm text-mute">Tem alterações por guardar.</span>
+          <div className="flex gap-2">
+            <button className="btn-ghost" onClick={() => setD(s.data ?? null)} disabled={save.isPending}>Descartar</button>
+            <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 size={14} className="animate-spin" />}Guardar alterações</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
