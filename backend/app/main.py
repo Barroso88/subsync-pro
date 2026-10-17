@@ -644,6 +644,40 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                 "active_jobs": core.db.scalar("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"),
                 "pending_downloads": core.db.scalar("SELECT COUNT(*) FROM downloads WHERE status='prepared'")}
 
+    class ToolIn(BaseModel):
+        action: str
+        params: dict = {}
+
+    class ApplyIn(ToolIn):
+        base_hash: str
+
+    class RestoreIn(BaseModel):
+        force: bool = False
+
+    @api.get("/subtitles/{sid:int}/cues")
+    def sub_cues(sid: int, head: int = Query(30, le=200), tail: int = Query(30, le=200)):
+        return core.sub_cues(sid, head, tail)
+
+    @api.post("/subtitles/{sid:int}/preview")
+    def sub_preview(sid: int, b: ToolIn):
+        return core.sub_preview(sid, b.action, b.params)
+
+    @api.post("/subtitles/{sid:int}/apply")
+    def sub_apply(sid: int, b: ApplyIn):
+        return core.sub_apply(sid, b.action, b.params, b.base_hash)
+
+    @api.post("/subtitles/{sid:int}/delete")
+    def sub_delete(sid: int):
+        return core.sub_delete(sid)
+
+    @api.get("/subtitle-edits")
+    def subtitle_edits(media_id: int):
+        return core.edits_for(media_id)
+
+    @api.post("/subtitle-edits/{eid}/restore")
+    def restore_edit(eid: int, b: RestoreIn):
+        return core.restore_edit(eid, b.force)
+
     class DeleteEmptyIn(BaseModel):
         ids: list[int] = Field(max_length=5000)
 

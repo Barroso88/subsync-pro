@@ -282,57 +282,107 @@ class AlignResult:
     reason: str = ""
 
 
-def align_with_reference(candidate: list[Cue], reference: list[Cue]) -> AlignResult:
-    """Compara os instantes de início das falas com os de uma legenda de referência
-    (idioma diferente). Estima offset global e deriva.
+def _pair_offset(a: list[int], b: list[int], window: int = 400_000, tol: int = 250) -> tuple[int | None, float]:
+    """Desvio mais provável (ref − candidata) por histograma de TODOS os pares a ≤ `window` ms.
+    Devolve (desvio, fração de eventos de `a` que o suportam)."""
+    from bisect import bisect_left, bisect_right
+    hist: dict[int, int] = {}
+    for x in a:
+        lo, hi = bisect_left(b, x - window), bisect_right(b, x + window)
+        for y in b[lo:hi]:
+            k = round((y - x) / tol)
+            hist[k] = hist.get(k, 0) + 1
+    if not hist or not a:
+        return None, 0.0
+    best = max(hist, key=lambda k: hist[k] + 0.5 * (hist.get(k - 1, 0) + hist.get(k + 1, 0)))
+    score = hist[best] + hist.get(best - 1, 0) + hist.get(best + 1, 0)
+    return best * tol, min(1.0, score / len(a))
 
-    Limitação: assume que a referência está sincronizada com o vídeo; não usa áudio.
-    Em legendas de idiomas diferentes os cortes de fala nem sempre coincidem, por isso
-    o resultado é indicativo e só é "forte" quando a fração de pares é alta.
-    """
+
+def _matched(a: list[int], b: list[int], fn, tol: int = 1500) -> float:
     from bisect import bisect_left
+    ok = 0
+    for x in a:
+        y = fn(x)
+        i = bisect_left(b, y)
+        d = min((abs(b[j] - y) for j in (i - 1, i) if 0 <= j < len(b)), default=10**9)
+        ok += d <= tol
+    return ok / len(a)
 
+
+def estimate_alignment(candidate: list[Cue], reference: list[Cue]) -> dict:
+    """Estima o que aplicar à candidata para ficar alinhada com a referência: offset global e, se existir deriva
+    (ex.: 23,976 vs 25 fps), um ajuste linear. Compara instantes de início das falas; NÃO usa o áudio e assume a
+    referência sincronizada."""
+    from statistics import median
     a = sorted(c.start_ms for c in candidate if c.text)
     b = sorted(c.start_ms for c in reference if c.text)
     if len(a) < 30 or len(b) < 30:
-        return AlignResult(False, reason="Poucos eventos para comparar")
-
-    def nearest(sorted_list: list[int], x: int) -> int:
-        i = bisect_left(sorted_list, x)
-        best = None
-        for j in (i - 1, i):
-            if 0 <= j < len(sorted_list):
-                d = sorted_list[j] - x
-                if best is None or abs(d) < abs(best):
-                    best = d
-        return best if best is not None else 10**9
-
-    diffs = [nearest(b, x) for x in a]
-    # moda dos desvios (bins de 250 ms) numa janela de ±120 s
-    bins: dict[int, int] = {}
-    for d in diffs:
-        if abs(d) <= 120_000:
-            bins[round(d / 250)] = bins.get(round(d / 250), 0) + 1
-    if not bins:
-        return AlignResult(False, reason="Sem sobreposição temporal com a referência")
-    mode_bin = max(bins, key=lambda k: bins[k] + bins.get(k - 1, 0) * 0.5 + bins.get(k + 1, 0) * 0.5)
-    offset = mode_bin * 250
-    # desvio residual depois de aplicar o offset estimado (referência ≈ candidata + offset)
-    resid = [nearest(b, x + offset) for x in a]
-    good = [i for i, r in enumerate(resid) if abs(r) <= 1500]
-    ratio = len(good) / len(a)
-
-    def seg_offset(lo: int, hi: int) -> int | None:
-        seg = [nearest(b, x) for x in a[lo:hi]]
-        seg = [d for d in seg if abs(d) <= 120_000]
-        if len(seg) < 10:
-            return None
-        bs: dict[int, int] = {}
-        for d in seg:
-            bs[round(d / 250)] = bs.get(round(d / 250), 0) + 1
-        return max(bs, key=bs.get) * 250
-
+        return {"ok": False, "reason": "poucos eventos para comparar"}
     n = len(a)
-    o1, o3 = seg_offset(0, n // 3), seg_offset(2 * n // 3, n)
-    drift = (o3 - o1) if (o1 is not None and o3 is not None) else 0
-    return AlignResult(True, offset, round(ratio, 3), drift, len(a))
+    off, frac = _pair_offset(a, b)
+    res: dict = {"ok": False, "reason": "sem sobreposição temporal com a referência", "compared": n}
+    if off is not None and frac >= 0.2:
+        res.update(ok=True, offset_ms=off, match_ratio=round(_matched(a, b, lambda x: x + off), 3))
+    # deriva linear: desvio por janelas + ajuste robusto (Theil–Sen)
+    nw = max(6, min(24, n // 15))
+    pts: list[tuple[int, int]] = []
+    for w in range(nw):
+        seg = a[w * n // nw:(w + 1) * n // nw]
+        if len(seg) < 8:
+            continue
+        o, f = _pair_offset(seg, b)
+        if o is not None and f >= 0.3:
+            pts.append((int(median(seg)), o))
+    if len(pts) >= 3:
+        slopes = sorted((o2 - o1) / (t2 - t1) for i, (t1, o1) in enumerate(pts) for (t2, o2) in pts[i + 1:] if t2 > t1)
+        if slopes:
+            k = slopes[len(slopes) // 2]
+            c0 = sorted(o - k * t for t, o in pts)[len(pts) // 2]
+            first, last = k * a[0] + c0, k * a[-1] + c0
+            lin = (1 + k, c0)
+            lr = round(_matched(a, b, lambda x: lin[0] * x + lin[1]), 3)
+            if lr >= 0.3:
+                res.update(ok=True, o1=int(first), o3=int(last), drift_ms=int(last - first))
+                if abs(last - first) >= 800:
+                    res.update(linear=lin, linear_ratio=lr)
+                if "offset_ms" not in res:
+                    res.update(offset_ms=int(median([o for _, o in pts])), match_ratio=lr)
+    # deriva grande (ex.: 23,976 ↔ 25 fps): pesquisa de escala (conversões habituais + refinamento)
+    best_ratio = max(res.get("linear_ratio", 0.0), res.get("match_ratio", 0.0)) if res.get("ok") else 0.0
+    if best_ratio < 0.6:
+        fps = (23.976, 24.0, 25.0, 29.97, 30.0)
+        presets = sorted({a_ / b_ for a_ in fps for b_ in fps if a_ != b_})
+        a_sub = a if n <= 500 else a[:: -(-n // 500)]          # amostra para limitar o custo
+        def score(sc: float):
+            o, f = _pair_offset([int(x * sc) for x in a_sub], b)
+            return f, o
+        cand_sc = max(presets, key=lambda sc: score(sc)[0])
+        f_best = score(cand_sc)[0]
+        step = 0.0006
+        for _ in range(3):                                        # refinamento em torno do melhor
+            for d in (-2, -1, 1, 2):
+                sc = cand_sc + d * step
+                f = score(sc)[0]
+                if f > f_best:
+                    f_best, cand_sc = f, sc
+            step /= 3
+        if f_best >= 0.3:
+            o, _f = _pair_offset([int(x * cand_sc) for x in a], b)
+            if o is not None:
+                lin = (cand_sc, float(o))
+                lr = round(_matched(a, b, lambda x: lin[0] * x + lin[1]), 3)
+                if lr > best_ratio and lr >= 0.4:
+                    first, last = lin[0] * a[0] + lin[1] - a[0], lin[0] * a[-1] + lin[1] - a[-1]
+                    res.update(ok=True, linear=lin, linear_ratio=lr, o1=int(first), o3=int(last), drift_ms=int(last - first))
+                    res.setdefault("offset_ms", o)
+                    res.setdefault("match_ratio", lr)
+    return res
+
+
+def align_with_reference(candidate: list[Cue], reference: list[Cue]) -> AlignResult:
+    """Compara com uma legenda de referência (outro idioma). Limitação: assume a referência sincronizada; sem áudio."""
+    est = estimate_alignment(candidate, reference)
+    if not est["ok"]:
+        return AlignResult(False, reason=est.get("reason", "inconclusivo"))
+    return AlignResult(True, est["offset_ms"], est.get("match_ratio", 0.0), est.get("drift_ms", 0), est["compared"])

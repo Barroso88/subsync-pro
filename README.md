@@ -89,6 +89,16 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 
 No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On File Import** e **On File Upgrade** no Radarr — **On Import**/**On Upgrade** no Sonarr —, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
 
+## Ferramentas de legendas existentes
+
+Na ficha do filme, em cada legenda externa SRT: **Ferramentas** → *Atrasar/adiantar*, *Frame rate*, *Dois pontos*, *Sincronizar com referência* e *Apagar* (mover para backup).
+- **Só os tempos mudam**: texto, itálicos e posições ficam byte a byte iguais (ida e volta exata).
+- **Pré-visualização obrigatória** (antes → depois das primeiras e últimas falas, avisos de fim do vídeo) e **confirmação**. Se o ficheiro mudar entre a pré-visualização e a aplicação, recusa (hash).
+- O **original vai sempre para `/data/backups`** e fica em *Alterações a legendas* com **Restaurar** (recusa se o ficheiro foi alterado entretanto, salvo confirmação). «Apagar» move para backup; nunca apaga de vez.
+- Só em bibliotecas com **escrita ativa**, só ficheiros normais (não atalhos), escrita atómica.
+- **Sincronizar com referência** compara os instantes de início das falas com outra legenda do mesmo filme (correlação de todos os pares; deteta offset e deriva de frame rate) e **assume a referência correta**; **não usa o áudio**. Exige ≥ 40 % de correspondência; legendas sem relação são recusadas.
+- Limitações: só SRT (ASS/VTT não); backups não são apagados automaticamente; a pré-visualização é textual (sem leitor de vídeo), por isso confirme a sincronização a ver o filme.
+
 ## Bazarr (opcional)
 
 Em *Definições → Bazarr* (URL + API key do Bazarr), a app pode **pedir ao Bazarr** que procure e descarregue a legenda de um filme (botão **Pedir ao Bazarr** na ficha do filme, ou «Pesquisar com: Bazarr» no lote). O Bazarr usa os fornecedores dele (ex.: LegendasDivx, com a conta do utilizador no Bazarr) e grava o ficheiro; a app **reanalisa e valida** o resultado (um ficheiro vazio ou inválido não conta). Usa a API publicada pelo próprio Bazarr (`PATCH /api/movies/subtitles`). Requisitos: filme com id do Radarr (sincronizar metadados do Radarr), biblioteca com escrita ativa. Não há passo «por confirmar», porque quem grava é o Bazarr; o lote corre um filme de cada vez.

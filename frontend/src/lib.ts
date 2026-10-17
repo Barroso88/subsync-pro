@@ -22,3 +22,8 @@ export const baseName = (p: string) => p.split("/").pop() || p;
 export const langLabel = (c: string | null | undefined, langs?: { code: string; name: string }[]) =>
   !c ? "Desconhecido" : langs?.find((l) => l.code === c)?.name ?? c;
 export const resolution = (h: number | null) => (!h ? "" : h >= 2000 ? "4K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : `${h}p`);
+export const fmtTs = (ms: number) => {
+  const neg = ms < 0; const t = Math.abs(Math.round(ms));
+  const h = Math.floor(t / 3600000), m = Math.floor((t % 3600000) / 60000), sec = Math.floor((t % 60000) / 1000), r = t % 1000;
+  return `${neg ? "-" : ""}${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")},${String(r).padStart(3, "0")}`;
+};

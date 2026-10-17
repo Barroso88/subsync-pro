@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 from dataclasses import replace
 import time
@@ -26,10 +27,11 @@ from .languages import normalize_lang
 from .moviehash import moviehash
 from .providers.base import ProviderContext, ProviderError, RateLimiter, SearchQuery, SubtitleResult
 from .providers.registry import PROVIDERS
-from .safepaths import PathSecurityError, is_within, require_within
+from .safepaths import PathSecurityError, is_within, require_within, sanitize_filename
 from .scanner import Scanner, ScanAborted
 from .settings import Settings
-from .subtitles.parser import ParsedSub, parse_bytes
+from .subtitles.parser import ParsedSub, parse_bytes, decode_bytes, parse_srt
+from . import subtitle_tools as st
 from .translation import TARGETS, DeepL, DeepLError, count_chars, to_srt, translate_cues
 from .util import add_event, log, now, scrub
 
@@ -908,6 +910,162 @@ class App:
                         raise
         add_event(self.db, "bazarr", f"Lote Bazarr: {out['found']} encontradas, {out['not_found']} sem resultado, {out['errors']} erros.")
         return out
+
+    # ---- ferramentas de legendas existentes (pré-visualizar / aplicar com backup / restaurar) ----
+    def _sub(self, sid: int) -> dict:
+        r = self.db.one("SELECT s.*, m.duration AS media_duration, m.dir AS media_dir FROM subtitles s "
+                        "LEFT JOIN media_items m ON m.id=s.media_id WHERE s.id=?", (sid,))
+        if not r or r["kind"] != "external" or not r["present"]:
+            raise ServiceError("Legenda externa não encontrada.", 404)
+        return dict(r)
+
+    def _read_editable(self, sub: dict, *, any_ext: bool = False) -> tuple[str, bytes]:
+        try:
+            real = st.check_editable(sub["path"], self.writable_roots(), allow_any_sub_ext=any_ext)
+        except st.ToolError as e:
+            raise ServiceError(str(e), e.status)
+        return real, Path(real).read_bytes()
+
+    def sub_cues(self, sid: int, head: int = 30, tail: int = 30) -> dict:
+        sub = self._sub(sid)
+        real = require_within(sub["path"], [l["path"] for l in self.libraries()])
+        data = Path(real).read_bytes()
+        text, _ = decode_bytes(data)
+        cues = parse_srt(text).cues if sub["path"].lower().endswith(".srt") else []
+        rows_ = [{"n": i + 1, "start": c.start_ms, "end": c.end_ms, "text": c.text[:90]} for i, c in enumerate(cues)]
+        return {"total": len(rows_), "head": rows_[:head], "tail": rows_[-tail:] if len(rows_) > head else [],
+                "references": [{"id": r["id"], "name": os.path.basename(r["path"]), "lang": r["lang"], "cues": r["cue_count"]}
+                               for r in self.db.query("SELECT id,path,lang,cue_count FROM subtitles WHERE media_id=? AND kind='external' AND present=1 "
+                                                      "AND status='ok' AND text_based=1 AND id!=? AND cue_count>=30", (sub["media_id"], sid))]}
+
+    def _plan(self, sid: int, action: str, params: dict):
+        sub = self._sub(sid)
+        real, data = self._read_editable(sub)
+        text, enc = decode_bytes(data)
+        parsed = parse_srt(text)
+        if not parsed.cues:
+            raise ServiceError("Legenda sem eventos legíveis.", 422)
+        ref = None
+        if action == "reference":
+            rid = params.get("reference_id")
+            rr = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='external' AND present=1 AND status='ok'", (rid, sub["media_id"]))
+            if not rr:
+                raise ServiceError("Referência inválida (tem de ser outra legenda válida do mesmo filme).", 422)
+            try:
+                rreal = require_within(rr["path"], [l["path"] for l in self.libraries()])
+            except PathSecurityError:
+                raise ServiceError("Referência fora das bibliotecas.", 403)
+            ref = parse_bytes(Path(rreal).read_bytes(), os.path.splitext(rr["path"])[1].lower())
+            if ref is None:
+                raise ServiceError("Não foi possível ler a referência.", 422)
+        try:
+            fn, info = st.make_mapper(action, params, parsed.cues, ref)
+        except st.ToolError as e:
+            raise ServiceError(str(e), e.status)
+        return sub, real, data, text, enc, parsed, fn, info
+
+    def sub_preview(self, sid: int, action: str, params: dict) -> dict:
+        sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
+        pv = st.build_preview(parsed.cues, fn, sub.get("media_duration"))
+        pv.update({"summary": info["summary"], "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc,
+                   "estimate": {k: v for k, v in (info.get("estimate") or {}).items() if k != "linear"} or None})
+        return pv
+
+    def _backup(self, real: str, sid: int) -> str:
+        self.cfg.backup_dir.mkdir(parents=True, exist_ok=True)
+        dst = self.cfg.backup_dir / f"{int(time.time())}-{sid}-{sanitize_filename(os.path.basename(real))}"
+        shutil.copy2(real, dst)
+        return str(dst)
+
+    def _record_edit(self, sub: dict, action: str, params: dict, backup: str | None, before: str, after: str | None) -> int:
+        return self.db.execute(
+            "INSERT INTO subtitle_edits(subtitle_id,media_id,library_id,path,action,params,backup_path,before_hash,after_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (sub["id"], sub["media_id"], sub["library_id"], sub["path"], action, json.dumps({k: v for k, v in params.items()}), backup, before, after, now())).lastrowid
+
+    def _rescan_dir(self, sub: dict) -> None:
+        lib = self.db.one("SELECT * FROM libraries WHERE id=?", (sub["library_id"],))
+        if lib:
+            try:
+                self.scanner.scan_library(dict(lib), None, os.path.dirname(sub["path"]), force_subs=True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("reanálise após edição: %s", scrub(str(e)))
+
+    def sub_apply(self, sid: int, action: str, params: dict, base_hash: str) -> dict:
+        sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
+        if st.sha1(data) != base_hash:
+            raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)
+        new_text, stats = st.retime_srt(text, fn)
+        if stats["cues"] and stats["dropped"] > max(3, stats["cues"] * 0.05):
+            raise ServiceError(f"A alteração removeria {stats['dropped']} falas (>5 %): provavelmente o deslocamento está errado.", 422)
+        new_bytes = st.encode_like(new_text, data, enc)
+        if len(parse_srt(new_text).cues) != stats["cues"] - stats["dropped"]:
+            raise ServiceError("Verificação falhou: o resultado não tem o número esperado de falas. Nada foi alterado.", 500)
+        backup = self._backup(real, sid)
+        try:
+            st.atomic_replace(real, new_bytes)
+        except OSError as e:
+            raise ServiceError(f"Não foi possível escrever: {e.strerror}", 403)
+        eid = self._record_edit(sub, action, params, backup, st.sha1(data), st.sha1(new_bytes))
+        add_event(self.db, "edit", f"Legenda ajustada ({action}): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
+        self._rescan_dir(sub)
+        return {"edit_id": eid, "summary": info["summary"], "dropped": stats["dropped"], "clamped": stats["clamped"]}
+
+    def sub_delete(self, sid: int) -> dict:
+        """Remove a legenda da pasta mas guarda uma cópia (restaurável). Nunca apaga vídeos."""
+        sub = self._sub(sid)
+        real, data = self._read_editable(sub, any_ext=True) if os.path.getsize(sub["path"]) else (None, b"")
+        if real is None:
+            raise ServiceError("Ficheiro vazio: use a página «Legendas vazias».", 422)
+        backup = self._backup(real, sid)
+        try:
+            os.unlink(real)
+        except OSError as e:
+            raise ServiceError(f"Não foi possível remover: {e.strerror}", 403)
+        self.db.execute("UPDATE subtitles SET present=0 WHERE id=?", (sid,))
+        eid = self._record_edit(sub, "delete", {}, backup, st.sha1(data), None)
+        add_event(self.db, "edit", f"Legenda movida para backup: {os.path.basename(real)} (#{eid})", "info", sub["media_id"])
+        return {"edit_id": eid}
+
+    def edits_for(self, media_id: int) -> list[dict]:
+        out = []
+        for r in self.db.query("SELECT * FROM subtitle_edits WHERE media_id=? ORDER BY id DESC LIMIT 50", (media_id,)):
+            d = dict(r)
+            d["name"] = os.path.basename(d["path"])
+            d["params"] = jloads(d["params"], {})
+            d["backup_exists"] = bool(d["backup_path"]) and os.path.isfile(d["backup_path"])
+            d.pop("backup_path", None)
+            out.append(d)
+        return out
+
+    def restore_edit(self, eid: int, force: bool = False) -> dict:
+        e = self.db.one("SELECT * FROM subtitle_edits WHERE id=?", (eid,))
+        if not e:
+            raise ServiceError("Alteração não encontrada.", 404)
+        if e["restored_at"]:
+            raise ServiceError("Já foi restaurada.", 409)
+        if not e["backup_path"] or not is_within(e["backup_path"], self.cfg.backup_dir) or not os.path.isfile(e["backup_path"]):
+            raise ServiceError("A cópia de segurança já não existe.", 410)
+        try:
+            real = require_within(e["path"], self.writable_roots())
+        except PathSecurityError:
+            raise ServiceError("O destino não está numa biblioteca com escrita ativa.", 403)
+        if not os.access(os.path.dirname(real), os.W_OK):
+            raise ServiceError("Sem permissão de escrita na pasta.", 403)
+        backup_bytes = Path(e["backup_path"]).read_bytes()
+        if e["action"] == "delete":
+            if os.path.lexists(real):
+                raise ServiceError("Já existe um ficheiro com este nome; não é substituído.", 409)
+        else:
+            if not os.path.isfile(real):
+                pass  # o ficheiro foi removido entretanto: repõe
+            elif st.sha1(Path(real).read_bytes()) != e["after_hash"] and not force:
+                raise ServiceError("O ficheiro foi alterado depois desta edição. Restaurar sobrepõe essas alterações (use «forçar»).", 409)
+        st.atomic_replace(real, backup_bytes)
+        self.db.execute("UPDATE subtitle_edits SET restored_at=? WHERE id=?", (now(), eid))
+        add_event(self.db, "edit", f"Legenda restaurada: {os.path.basename(real)} (#{eid})", "info", e["media_id"])
+        sub = {"library_id": e["library_id"], "path": real}
+        self._rescan_dir(sub)
+        return {"restored": True}
 
     # ---- legendas vazias (listar / apagar com salvaguardas) --------------------
     def _empty_rows(self, q: str | None = None, lang: str | None = None) -> list[dict]:

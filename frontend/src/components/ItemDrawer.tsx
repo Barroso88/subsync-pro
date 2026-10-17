@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench } from "lucide-react";
 import { api, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
 import { useMeta } from "../hooks";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
 import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "./subs";
+import { EditHistory, SubToolsModal } from "./SubTools";
 
 interface Detail extends Item {
   dir: string; size: number; radarr_id?: number | null; subtitles: Sub[]; downloads: Download[]; moviehash: string | null; library_writable: boolean; probe_status: string;
@@ -55,6 +56,7 @@ export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | 
             <button className="btn-quiet" onClick={() => rescan.mutate()} disabled={rescan.isPending}><RefreshCw size={14} className={cx(rescan.isPending && "animate-spin")} />Reanalisar</button>
           </div>
           {tab === "subs" ? <SubsList d={d} onSearch={() => setTab("search")} /> : <SearchPanel d={d} meta={meta.data} />}
+          <EditHistory mediaId={d.id} />
         </div>
       )}
     </Drawer>
@@ -65,6 +67,7 @@ const ISSUE_TONE: Record<string, "bad" | "warn" | "neutral"> = { error: "bad", w
 
 function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   const meta = useMeta();
+  const [tools, setTools] = useState<Sub | null>(null);
   if (!d.subtitles.length) return <Empty icon={<FileText size={20} />} title="Sem legendas" hint="Não foram encontradas legendas externas nem embutidas para este vídeo." action={<button className="btn-primary" onClick={onSearch}><Search size={14} />Procurar online</button>} />;
   return (
     <div className="space-y-2.5">
@@ -95,11 +98,13 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
           {s.issues.map((i: Issue, k: number) => (
             <div key={k} className="flex gap-2 text-xs"><AlertTriangle size={13} className={cx("shrink-0 mt-0.5", i.severity === "error" ? "text-bad" : i.severity === "warning" ? "text-warn" : "text-dim")} /><span className="text-mute">{i.message}</span></div>
           ))}
+          {s.kind === "external" && s.status === "ok" && <div><button className="btn-ghost !h-8" onClick={() => setTools(s)}><Wrench size={13} />Ferramentas</button></div>}
           {s.issues.some((i) => ["duplicate", "language_mismatch", "name_mismatch", "beyond_video", "truncated", "unassociated"].includes(i.code)) && (
             <div className="text-xs text-info bg-info/10 rounded-md px-2.5 py-1.5">Recomendação: reveja manualmente este ficheiro. A aplicação nunca altera nem apaga legendas existentes.</div>
           )}
         </div>
       ))}
+      <SubToolsModal sub={tools ? { id: tools.id, name: baseName(tools.path), lang: tools.lang, canEdit: d.library_writable, isSrt: tools.path.toLowerCase().endsWith(".srt") } : null} onClose={() => setTools(null)} />
     </div>
   );
 }
