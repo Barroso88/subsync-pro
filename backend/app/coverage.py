@@ -41,6 +41,11 @@ def compute(db: Database, settings: Settings, media_ids: list[int] | None = None
                 if covered.get(s["lang"]) != "external":
                     covered[s["lang"]] = src
         fallback: dict[str, str] = {}
+        if cfg.get("generic_pt_counts") and "pt" in covered:
+            for v in ("pt-PT", "pt-BR"):
+                if v in primary and v not in covered:
+                    covered[v] = covered["pt"]
+                    fallback[v] = "pt"
         if cfg.get("accept_pt_br_fallback") and "pt-PT" in primary and "pt-PT" not in covered and "pt-BR" in covered:
             covered["pt-PT"] = covered["pt-BR"]          # conta como cobertura, mas fica assinalado
             fallback["pt-PT"] = "pt-BR"

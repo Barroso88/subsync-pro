@@ -94,7 +94,7 @@ def test_coverage_and_embedded_setting(core, media_root):
 
 def test_generic_pt_does_not_satisfy_pt_pt(core, media_root):
     d = media_root / "Filmes" / "Filme Teste (2024)"
-    (d / "Filme Teste (2024).pt.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+    (d / "Filme Teste (2024).pt.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá.\n", "utf-8")   # variante indeterminável
     add_libs(core, media_root)
     wait_job(core, core.start_scan(None))
     core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}])
@@ -154,3 +154,35 @@ def test_persistence_after_restart(cfg, fake_probe, media_root):
         assert len(b.libraries()) == 1
     finally:
         b.stop()
+
+
+def test_generic_pt_name_refined_by_content_and_policy(core, media_root):
+    from tests.conftest import PT_BR_TEXT
+    d = media_root / "Filmes" / "Filme Teste (2024)"
+    (d / "Filme Teste (2024).pt.srt").write_text(make_srt(60, pool=PT_BR_TEXT), "utf-8")
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    r = core.db.one("SELECT lang,lang_source,issues FROM subtitles WHERE path LIKE '%.pt.srt'")
+    assert (r["lang"], r["lang_source"]) == ("pt-BR", "content") and "variant_estimated" in r["issues"]
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}])
+    assert cov.compute(core.db, core.settings, [mid])[mid]["missing"] == ["pt-PT"]          # pt-BR já coberto pela variante estimada
+
+
+def test_generic_pt_undetermined_policy_and_revalidate(core, media_root, fake_probe):
+    d = media_root / "Filmes" / "Filme Teste (2024)"
+    (d / "Filme Teste (2024).pt.srt").write_text(make_srt(60, lang="en"), "utf-8")   # sem marcadores: continua «pt»
+    sub = d / "Filme Teste (2024).pt.srt"
+    sub.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá.\n", "utf-8")             # curto: variante indeterminada
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}])
+    c = cov.compute(core.db, core.settings, [mid])[mid]
+    assert c["missing"] == ["pt-PT"] and "pt" in c["covered"]
+    core.settings.set("generic_pt_counts", True)
+    c = cov.compute(core.db, core.settings, [mid])[mid]
+    assert c["missing"] == [] and c["fallback"] == {"pt-PT": "pt"}
+    n_probe = len(fake_probe)
+    assert wait_job(core, core.jobs.submit("revalidate", "r", {}))["status"] == "done"
+    assert len(fake_probe) == n_probe                                                      # relê legendas sem reexecutar ffprobe

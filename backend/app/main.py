@@ -197,10 +197,11 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         library_id: int | None = None
         subpath: str | None = None
         force: bool = False
+        force_subs: bool = False
 
     @api.post("/scan", status_code=202)
     def scan(b: ScanIn):
-        return {"job_id": core.start_scan(b.library_id, b.subpath, b.force)}
+        return {"job_id": core.start_scan(b.library_id, b.subpath, b.force, force_subs=b.force_subs)}
 
     @api.post("/media/{mid}/rescan", status_code=202)
     def rescan(mid: int):
@@ -273,7 +274,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def media_list(kind: str | None = None, q: str | None = None, lang: str | None = None,
                    status: str | None = None, series: str | None = None, season: int | None = None,
                    sort: str = "title", limit: int = Query(60, le=500), offset: int = 0):
-        """status: missing | none (sem nenhuma legenda) | other (só noutros idiomas) | has | suspect | unverified"""
+        """status: genericpt | missing | none (sem nenhuma legenda) | other (só noutros idiomas) | has | suspect | unverified"""
         args: list[Any] = []
         where = ["m.present=1"]
         if kind in ("movie", "episode"):
@@ -299,7 +300,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
             covered = c.get("covered", {})
             miss = (lang not in covered) if lang else bool(c.get("missing"))
             nsubs = c.get("n_external", 0) + c.get("n_embedded", 0)
-            if status in ("missing", "none", "other"):
+            if status == "genericpt":      # em falta mas com «pt» sem variante identificada
+                if not miss or "pt" not in covered:
+                    continue
+            elif status in ("missing", "none", "other"):
                 if not miss or (status == "none" and nsubs) or (status == "other" and not nsubs):
                     continue
             elif status == "has":

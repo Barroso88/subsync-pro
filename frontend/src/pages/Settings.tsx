@@ -59,6 +59,7 @@ export default function SettingsPage() {
           <div className="grid sm:grid-cols-2 gap-4 mt-5">
             <Toggle checked={d.embedded_counts} onChange={(v) => set("embedded_counts", v)} label="Legendas embutidas contam para a cobertura" hint="Se desligado, só ficheiros externos satisfazem um idioma." />
             <Toggle checked={d.prefer_full} onChange={(v) => set("prefer_full", v)} label="Preferir legendas completas" hint="Forçadas nunca contam como cobertura do idioma." />
+            <Toggle checked={!!d.generic_pt_counts} onChange={(v) => set("generic_pt_counts", v)} label="Contar «pt» sem variante como pt-PT e pt-BR" hint="Para legendas portuguesas cujo nome e conteúdo não indicam a variante. Fica assinalado (≈pt) na cobertura." />
             <Toggle checked={!!d.accept_pt_br_fallback} onChange={(v) => set("accept_pt_br_fallback", v)} label="Aceitar pt-BR quando faltar pt-PT" hint="Pesquisa também pt-BR; uma legenda pt-BR conta como cobertura de pt-PT (assinalada) e é guardada como .pt-BR.srt, nunca renomeada. Em lote, pt-PT tem sempre prioridade." />
             <Toggle checked={!!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, enabled: v })} label="Permitir tradução automática (DeepL)" hint="Mostra «Traduzir» nos resultados noutros idiomas. Requer chave DeepL em Fornecedores. O texto é enviado ao DeepL." />
             <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de inglês se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome caracteres do DeepL." />
@@ -77,7 +78,8 @@ export default function SettingsPage() {
           </div>
         </Section>
 
-        <Section title="Scanner" hint="Reanálise incremental: só ficheiros novos ou alterados são processados de novo.">
+        <Section title="Scanner" hint="Reanálise incremental: só ficheiros novos ou alterados são processados de novo."
+          actions={<RevalidateButton />}>
           <Field label="Intervalo da análise agendada (minutos)" hint="0 = apenas manual. O número máximo de tarefas simultâneas define-se por variável de ambiente (SUBSYNC_MAX_JOBS).">
             <input className="input max-w-[200px]" type="number" min={0} value={d.scan_interval_minutes} onChange={(e) => set("scan_interval_minutes", Number(e.target.value))} />
           </Field>
@@ -104,6 +106,12 @@ export default function SettingsPage() {
       )}
     </>
   );
+}
+
+function RevalidateButton() {
+  const start = useStartJob();
+  return <button className="btn-ghost" disabled={start.isPending} title="Relê todas as legendas externas (idioma, variante pt-PT/pt-BR, validade). Não volta a executar o FFprobe nos vídeos."
+    onClick={() => start.mutate({ url: "/revalidate" })}><ScanSearch size={15} />Reclassificar legendas</button>;
 }
 
 function Libraries() {

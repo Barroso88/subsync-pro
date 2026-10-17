@@ -19,8 +19,13 @@ PT_PT = ["Não sei do que estás a falar, mas este não é o momento para isso."
          "É a única coisa que eu sei sobre o mundo, e tu também sabes isso muito bem.", "Podes dizer-me para onde ela foi? Não vou fazer isto sem ela, gajo."]
 
 
-def make_srt(n: int = 120, step_ms: int = 30_000, start_ms: int = 10_000, lang: str = "en", offset_ms: int = 0) -> str:
-    pool = {"en": EN, "pt-PT": PT_PT}[lang]
+PT_BR_TEXT = ["Eu não sei do que você está falando, mas esse não é o momento para isso.", "Você tem que entender que a gente não pode esperar por eles, né?",
+              "O que você está fazendo aqui com tudo isso? Era só uma pergunta, cara.", "Disseram que ele ia voltar para você e para o seu amigo, que está no ônibus.",
+              "É a única coisa que eu sei sobre o mundo, e você também sabe isso muito bem.", "Você pode me dizer para onde ela foi? Não vou fazer isso sem ela, legal."]
+
+
+def make_srt(n: int = 120, step_ms: int = 30_000, start_ms: int = 10_000, lang: str = "en", offset_ms: int = 0, pool: list[str] | None = None) -> str:
+    pool = pool or {"en": EN, "pt-PT": PT_PT}[lang]
     def ts(ms):
         s, ms = divmod(ms, 1000)
         return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d},{ms:03d}"

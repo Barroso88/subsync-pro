@@ -91,10 +91,10 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
         <div className="card p-3.5 mb-4 space-y-3">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2"><span className="label w-28">Situação</span>
             <Tabs value={status || "missing"} onChange={setStatus} items={[
-              { id: "missing", label: "Todas as em falta" }, { id: "none", label: "Sem nenhuma legenda" }, { id: "other", label: "Só noutros idiomas" }]} /></div>
+              { id: "missing", label: "Todas as em falta" }, { id: "none", label: "Sem nenhuma legenda" }, { id: "other", label: "Só noutros idiomas" }, { id: "genericpt", label: "Tem «pt» sem variante" }]} /></div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2"><span className="label w-28">Idioma em falta</span>
             <Tabs value={lang} onChange={setLang} items={[{ id: "", label: "Qualquer prioritário" }, ...langs.map((l) => ({ id: l, label: l }))]} /></div>
-          <div className="text-xs text-dim">«Só noutros idiomas»: já têm legenda (externa ou embutida) mas não no idioma escolhido — são as melhores candidatas a tradução automática.</div>
+          <div className="text-xs text-dim">«Só noutros idiomas»: já têm legenda (externa ou embutida) mas não no idioma escolhido — são as melhores candidatas a tradução automática. «Tem pt sem variante»: legenda portuguesa cujo nome não indica pt-PT ou pt-BR e cujo conteúdo não permitiu estimar a variante.</div>
         </div>
       )}
       {list.isError && <ErrorBox error={list.error} retry={() => list.refetch()} />}

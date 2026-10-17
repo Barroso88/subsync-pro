@@ -90,7 +90,7 @@ class Scanner:
         self.ffprobe_ok = True
 
     # ------------------------------------------------------------------
-    def scan_library(self, lib: dict, ctx: JobContext | None = None, subpath: str | None = None, force: bool = False) -> dict:
+    def scan_library(self, lib: dict, ctx: JobContext | None = None, subpath: str | None = None, force: bool = False, force_subs: bool = False) -> dict:
         root = lib["path"]
         if not os.path.isdir(root):
             raise ScanAborted(f"Pasta da biblioteca inacessível: {root} (share desmontada?)")
@@ -112,7 +112,7 @@ class Scanner:
             for d, videos, subs in dirs:
                 if ctx:
                     ctx.check_cancel()
-                self._scan_dir(lib, lib_path, d, videos, subs, known, seen_media, seen_subs, stats, pool, force, ctx)
+                self._scan_dir(lib, lib_path, d, videos, subs, known, seen_media, seen_subs, stats, pool, force, ctx, force_subs)
 
         # removidos: só dentro da área analisada, e só se a árvore não parece desmontada
         prefix = scan_root.rstrip("/") + "/"
@@ -136,7 +136,7 @@ class Scanner:
         return stats
 
     # ------------------------------------------------------------------
-    def _scan_dir(self, lib, lib_path, d, videos, subs, known, seen_media, seen_subs, stats, pool, force, ctx):
+    def _scan_dir(self, lib, lib_path, d, videos, subs, known, seen_media, seen_subs, stats, pool, force, ctx, force_subs=False):
         # 1) vídeos
         to_probe = []
         media_by_path: dict[str, int] = {}
@@ -189,7 +189,7 @@ class Scanner:
             seen_subs.add((sp, None))
             stats["subs"] += 1
             try:
-                self._scan_sub(lib, s, all_vids, media_by_path, force)
+                self._scan_sub(lib, s, all_vids, media_by_path, force or force_subs)
             except OSError as e:
                 stats["errors"] += 1
                 log.warning("legenda %s: %s", s, e)
@@ -295,6 +295,11 @@ class Scanner:
         lang_source = "filename" if lang else "unknown"
         if not lang and detected:
             lang, lang_source = detected, "content"
+        elif lang == "pt" and detected in ("pt-PT", "pt-BR"):
+            # «pt» no nome não indica a variante: o conteúdo (marcadores lexicais) permite estimá-la
+            lang, lang_source = detected, "content"
+            issues.append({"code": "variant_estimated", "severity": "info",
+                           "message": f"O nome diz «pt»; a variante «{detected}» foi estimada pelo conteúdo (heurística)."})
         if name.lang and detected and normalize_lang(detected) and not _compatible(name.lang, detected):
             issues.append({"code": "language_mismatch", "severity": "warning",
                            "message": f"O nome indica «{name.lang}» mas o conteúdo parece «{detected}»."})

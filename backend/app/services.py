@@ -134,9 +134,9 @@ class App:
         return [l["path"] for l in self.libraries() if l["effective_write"]]
 
     # ---- scanner / tarefas -------------------------------------------------
-    def start_scan(self, library_id: int | None, subpath: str | None = None, force: bool = False, scheduled: bool = False) -> int:
+    def start_scan(self, library_id: int | None, subpath: str | None = None, force: bool = False, scheduled: bool = False, force_subs: bool = False) -> int:
         title = "Análise " + ("agendada" if scheduled else "de bibliotecas")
-        return self.jobs.submit("scan", title, {"library_id": library_id, "subpath": subpath, "force": force}, dedupe=True)
+        return self.jobs.submit("scan", title, {"library_id": library_id, "subpath": subpath, "force": force, "force_subs": force_subs}, dedupe=True)
 
     def _job_scan(self, ctx: JobContext, p: dict) -> dict:
         libs = [dict(r) for r in self.db.query("SELECT * FROM libraries" + (" WHERE id=?" if p.get("library_id") else ""),
@@ -145,7 +145,7 @@ class App:
         for lib in libs:
             ctx.check_cancel()
             try:
-                st = self.scanner.scan_library(lib, ctx, p.get("subpath"), bool(p.get("force")))
+                st = self.scanner.scan_library(lib, ctx, p.get("subpath"), bool(p.get("force")), bool(p.get("force_subs")))
             except ScanAborted as e:
                 add_event(self.db, "scan", str(e), "error")
                 raise
@@ -737,6 +737,6 @@ class App:
         n = 0
         for lid in lib_ids:
             lib = dict(self.db.one("SELECT * FROM libraries WHERE id=?", (lid,)))
-            self.scanner.scan_library(lib, ctx, None, force=True)
+            self.scanner.scan_library(lib, ctx, None, force_subs=True)   # só relê legendas; não volta ao ffprobe
             n += 1
         return {"libraries": n}
