@@ -180,7 +180,11 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
   const upd = (patch: any) => set(name, { ...cfg, ...patch });
   const saveSecret = useMutation({ mutationFn: () => api.put("/secrets", { values: { [secretKey]: secret.trim() } }), onSuccess: () => { setSecret(""); qc.invalidateQueries({ queryKey: ["integrations"] }); toast("ok", "Segredo guardado"); }, onError: (e: Error) => toast("bad", e.message) });
   const test = useMutation({
-    mutationFn: async () => { await api.put("/settings", { [name]: cfg }); return api.post<any>(`/integrations/${name}/test`); },
+    mutationFn: async () => {
+      if (secret.trim()) { await api.put("/secrets", { values: { [secretKey]: secret.trim() } }); setSecret(""); qc.invalidateQueries({ queryKey: ["integrations"] }); }
+      await api.put("/settings", { [name]: cfg });
+      return api.post<any>(`/integrations/${name}/test`);
+    },
     onSuccess: (r) => toast(r.ok ? "ok" : "bad", r.ok ? `Ligação OK${r.version ? ` (v${r.version})` : ""}` : r.message), onError: (e: Error) => toast("bad", e.message),
   });
   const sync = useStartJob();
@@ -211,7 +215,7 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
           </Field>
           <div className="flex gap-2 justify-end">
             <button className="btn-ghost" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending && <Loader2 size={14} className="animate-spin" />}Testar ligação</button>
-            <button className="btn-ghost" onClick={() => sync.mutate({ url: "/integrations/sync" })}>Sincronizar metadados</button>
+            <button className="btn-ghost" onClick={async () => { try { if (secret.trim()) { await api.put("/secrets", { values: { [secretKey]: secret.trim() } }); setSecret(""); } await api.put("/settings", { [name]: cfg }); qc.invalidateQueries({ queryKey: ["integrations"] }); sync.mutate({ url: "/integrations/sync" }); } catch (e) { toast("bad", (e as Error).message); } }}>Sincronizar metadados</button>
           </div>
         </div>
       )}
