@@ -1,5 +1,5 @@
 import { ReactNode, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, AlertCircle, Clapperboard, Download, Gauge, Menu, PlugZap, Search, Settings, Tv, ListVideo, X, Subtitles } from "lucide-react";
 import { api } from "../api";
@@ -24,12 +24,15 @@ export function Layout() {
   const sb = useSidebar();
   const meta = useMeta();
   useJobWatcher();
+  const loc = useLocation();
+  const missingLangs = Object.entries(sb.data?.missing_by_lang ?? {});
   const nav = (
     <nav className="flex flex-col gap-0.5 px-3 py-2" aria-label="Principal">
       {NAV.map((n) => {
         const count = n.badge ? sb.data?.[n.badge] : 0;
         return (
-          <NavLink key={n.to} to={n.to} end={n.to === "/"} onClick={() => setOpen(false)}
+          <div key={n.to}>
+          <NavLink to={n.to} end={n.to === "/" || n.to === "/em-falta"} onClick={() => setOpen(false)}
             className={({ isActive }) => cx("flex items-center gap-3 h-9 px-3 rounded-lg text-[13.5px] transition-colors", isActive ? "bg-s3 text-fg" : "text-mute hover:text-fg hover:bg-s2")}>
             {({ isActive }) => (<>
               <n.icon size={17} className={isActive ? "text-accent" : ""} />
@@ -37,6 +40,17 @@ export function Layout() {
               {!!count && <span className={cx("min-w-5 h-5 px-1.5 rounded-full text-[11px] font-semibold grid place-items-center tabular-nums", n.badge === "missing" ? "bg-bad/20 text-bad" : "bg-accent/20 text-accent")}>{count > 999 ? "999+" : count}</span>}
             </>)}
           </NavLink>
+          {n.to === "/em-falta" && missingLangs.map(([code, c]) => {
+            const active = loc.pathname === "/em-falta" && new URLSearchParams(loc.search).get("lang") === code;
+            return (
+              <NavLink key={code} to={`/em-falta?lang=${code}`} onClick={() => setOpen(false)}
+                className={cx("flex items-center gap-2.5 h-8 pl-11 pr-3 rounded-lg text-[13px] transition-colors", active ? "bg-s3 text-fg" : "text-mute hover:text-fg hover:bg-s2")}>
+                <span className="flex-1 truncate">Em falta · {code}</span>
+                <span className={cx("min-w-5 h-5 px-1.5 rounded-full text-[11px] font-semibold grid place-items-center tabular-nums", c ? "bg-bad/15 text-bad" : "bg-ok/15 text-ok")}>{c > 999 ? "999+" : c}</span>
+              </NavLink>
+            );
+          })}
+          </div>
         );
       })}
     </nav>

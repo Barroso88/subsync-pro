@@ -573,7 +573,9 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @api.get("/sidebar")
     def sidebar():
         covs = cov.compute(core.db, core.settings)
+        langs = [l["code"] for l in core.settings.get("languages")]
         return {"missing": sum(1 for v in covs.values() if v["missing"]),
+                "missing_by_lang": {c: sum(1 for v in covs.values() if c not in v["covered"]) for c in langs},
                 "active_jobs": core.db.scalar("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"),
                 "pending_downloads": core.db.scalar("SELECT COUNT(*) FROM downloads WHERE status='prepared'")}
 

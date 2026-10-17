@@ -39,14 +39,14 @@ export function Poster({ item, className }: { item: Item; className?: string }) 
   );
 }
 
-export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, missingMode = false }: {
-  kind: "movie" | "episode"; defaultStatus?: string; allowGrid?: boolean; missingMode?: boolean;
+export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, missingMode = false, initialLang = "" }: {
+  kind: "movie" | "episode"; defaultStatus?: string; allowGrid?: boolean; missingMode?: boolean; initialLang?: string;
 }) {
   const meta = useMeta();
   const settings = useSettings();
   const [q, setQ] = useState("");
   const dq = useDebounced(q);
-  const [lang, setLang] = useState("");
+  const [lang, setLang] = useState(initialLang);
   const [status, setStatus] = useState(defaultStatus);
   const [view, setView] = useState<"grid" | "table">(allowGrid ? ((localStorage.getItem("view") as any) || "grid") : "table");
   const [page, setPage] = useState(0);

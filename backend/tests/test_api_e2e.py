@@ -249,3 +249,10 @@ def test_dashboard_card_always_equals_coverage_bar(client):
     for k in ("pt-PT", "pt-BR"):
         assert d["by_variant"][k]["total"] == bars[k]
         assert d["by_variant"][k]["movies"] + d["by_variant"][k]["episodes"] == bars[k]
+
+
+def test_sidebar_missing_split_by_language(client):
+    client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}]})
+    sb = client.get("/api/sidebar").json()
+    assert sb["missing_by_lang"] == {"pt-PT": 2, "pt-BR": 3}          # E01 tem pt-PT; E02 e filme não; pt-BR falta nos 3
+    assert sb["missing"] == 3
