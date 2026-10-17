@@ -626,7 +626,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     # ---- frontend estático -------------------------------------------------------
     static = cfg.static_dir
     if static and static.is_dir():
-        app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
+        app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")   # ficheiros com hash no nome
 
         @app.get("/{full_path:path}", include_in_schema=False)
         def spa(full_path: str):
@@ -634,8 +634,9 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                 raise HTTPException(404)
             f = (static / full_path).resolve()
             if full_path and f.is_file() and static.resolve() in f.parents:
-                return FileResponse(f)
-            return FileResponse(static / "index.html")
+                return FileResponse(f, headers={"Cache-Control": "public, max-age=3600"})
+            # a página principal nunca fica em cache: garante que o browser carrega sempre o JS mais recente
+            return FileResponse(static / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 

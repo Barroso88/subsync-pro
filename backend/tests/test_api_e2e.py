@@ -256,3 +256,13 @@ def test_sidebar_missing_split_by_language(client):
     sb = client.get("/api/sidebar").json()
     assert sb["missing_by_lang"] == {"pt-PT": 2, "pt-BR": 3}          # E01 tem pt-PT; E02 e filme não; pt-BR falta nos 3
     assert sb["missing"] == 3
+
+
+def test_index_html_is_never_cached(cfg, fake_probe, tmp_path):
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<html></html>")
+    cfg.static_dir = static
+    with TestClient(create_app(cfg)) as c:
+        r = c.get("/filmes")
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
