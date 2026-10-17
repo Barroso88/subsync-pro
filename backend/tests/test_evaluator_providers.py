@@ -227,7 +227,7 @@ def test_radarr_and_plex_parsing():
     t = httpx.MockTransport(h)
     maps = [{"remote": "/movies", "local": "/media/Filmes"}]
     m = Arr("radarr", "http://r", "K", maps, t, validate=False).movies()
-    assert m == [{"path": "/media/Filmes/F (2024)/F (2024).mkv", "title": "F", "year": 2024, "imdb_id": "tt1", "tmdb_id": 5,
+    assert m == [{"id": None, "path": "/media/Filmes/F (2024)/F (2024).mkv", "title": "F", "year": 2024, "imdb_id": "tt1", "tmdb_id": 5,
                   "poster": "arr:radarr:/MediaCover/1/poster.jpg"}]
     it = Plex("http://p", "T", maps, t, validate=False).items()
     assert it[0]["rating_key"] == "42" and it[0]["path"] == "/media/Filmes/F (2024)/F (2024).mkv"
@@ -274,3 +274,10 @@ def test_year_not_sent_when_identifier_present_and_modes():
     assert t["query"] == "web of lies" and "imdb_id" not in t and "year" not in t and "moviehash" not in t
     no_id = OpenSubtitles.build_params(SearchQuery("movie", "Some Film", year=2001))
     assert no_id["year"] == 2001 and no_id["query"] == "some film"
+
+
+def test_radarr_id_and_title_are_exposed():
+    def h(req: httpx.Request):
+        return httpx.Response(200, json=[{"id": 7111, "title": "Clean Hands", "year": 2024, "imdbId": "tt1", "tmdbId": 5, "movieFile": {"path": "/movies/a/a.mkv"}}])
+    m = Arr("radarr", "http://r", "K", [], httpx.MockTransport(h), validate=False).movies()
+    assert m[0]["id"] == 7111 and m[0]["title"] == "Clean Hands"

@@ -260,7 +260,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         c = c or {}
         d = {k: m[k] for k in ("id", "kind", "title", "year", "series_title", "season", "episode", "episode_title",
                                "file_name", "path", "duration", "width", "height", "video_codec", "fps", "plex_key",
-                               "library_id", "imdb_id", "tmdb_id") if k in m}
+                               "library_id", "imdb_id", "tmdb_id", "radarr_id", "radarr_title") if k in m}
         d["has_poster"] = bool(m.get("poster"))
         d["covered"] = c.get("covered", {})
         d["missing"] = c.get("missing", [])

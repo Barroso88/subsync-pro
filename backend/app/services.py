@@ -229,7 +229,7 @@ class App:
             try:
                 if name == "radarr":
                     for m in svc.movies():
-                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"])
+                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"))
                         if lookup.get(m["path"]):
                             set_poster(lookup[m["path"]], m["poster"], "arr")
                 elif name == "sonarr":

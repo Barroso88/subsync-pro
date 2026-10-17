@@ -54,7 +54,7 @@ class Arr:
             path = mf.get("path")
             if not path:
                 continue
-            out.append({"path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
+            out.append({"id": m.get("id"), "path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
                         "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images"))})
         return out
 
