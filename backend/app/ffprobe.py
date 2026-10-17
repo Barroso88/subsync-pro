@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -86,9 +87,12 @@ def parse_probe_json(raw: bytes | str) -> ProbeResult:
             title = tags.get("title")
             tl = (title or "").lower()
             codec = st.get("codec_name") or "?"
+            lang = normalize_lang(tags.get("language")) or _lang_from_title(title)
+            if lang == "pt" and _lang_from_title(title) in ("pt-PT", "pt-BR"):
+                lang = _lang_from_title(title)           # «por» + título «Brazilian» → pt-BR
             res.subs.append(EmbeddedSub(
                 index=int(st.get("index", 0)), codec=codec,
-                lang=normalize_lang(tags.get("language")) or _lang_from_title(title),
+                lang=lang,
                 raw_lang=tags.get("language"), title=title,
                 forced=bool(disp.get("forced")) or "forced" in tl or "forçada" in tl,
                 hi=bool(disp.get("hearing_impaired")) or "sdh" in tl or "hearing" in tl,
@@ -101,8 +105,20 @@ def _lang_from_title(title: str | None) -> str | None:
     if not title:
         return None
     t = title.lower()
-    if "brazil" in t or "pt-br" in t:
+    if re.search(r"brazil|brasil|pt[-_ ]?br|\bptbr\b|\(br\)|\bpob\b", t):
         return "pt-BR"
-    if "portugal" in t or "pt-pt" in t or "european" in t:
+    if re.search(r"portugal|pt[-_ ]?pt|european|europeu|\(pt\)|\beuro", t):
         return "pt-PT"
     return normalize_lang(t.split()[0]) if t.split() else None
+
+
+def extract_subtitle_text(path: str, index: int, ffmpeg_bin: str = "ffmpeg", timeout: int = 300) -> bytes | None:
+    """Extrai uma faixa de legenda de texto como SRT (stdout). Só leitura; sem shell; índice validado."""
+    if not os.path.isabs(path) or not isinstance(index, int) or index < 0:
+        return None
+    cmd = [ffmpeg_bin, "-v", "error", "-nostdin", "-i", path, "-map", f"0:{index}", "-f", "srt", "-"]
+    try:
+        cp = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return cp.stdout if cp.returncode == 0 and cp.stdout else None

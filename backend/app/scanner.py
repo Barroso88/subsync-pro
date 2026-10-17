@@ -85,8 +85,8 @@ def _sha1(data: bytes) -> str:
 
 
 class Scanner:
-    def __init__(self, db: Database, settings: Settings, ffprobe_bin: str = "ffprobe", workers: int = 4):
-        self.db, self.settings, self.ffprobe_bin, self.workers = db, settings, ffprobe_bin, workers
+    def __init__(self, db: Database, settings: Settings, ffprobe_bin: str = "ffprobe", workers: int = 4, ffmpeg_bin: str = "ffmpeg"):
+        self.db, self.settings, self.ffprobe_bin, self.workers, self.ffmpeg_bin = db, settings, ffprobe_bin, workers, ffmpeg_bin
         self.ffprobe_ok = True
 
     # ------------------------------------------------------------------
@@ -182,6 +182,12 @@ class Scanner:
             if r is None:
                 continue
             self._store_probe(lib, sp, media_id, r, stats)
+        # variante pt/pt-PT/pt-BR das faixas embutidas «pt»: lê o texto com o ffmpeg (só em vídeos novos/alterados ou em «reclassificar»)
+        targets = {(sp, mid) for sp, mid in to_probe}
+        if force_subs:
+            targets |= set(media_by_path.items())
+        if targets and self.ffprobe_ok:
+            list(pool.map(lambda t: self.refine_embedded_pt(t[0], t[1]), sorted(targets)))
         # 3) legendas externas
         all_vids = list(videos)
         for s in subs:
@@ -222,14 +228,34 @@ class Scanner:
             c.execute("UPDATE subtitles SET present=0 WHERE kind='embedded' AND path=?", (sp,))
             for s in r.subs:
                 c.execute(
-                    "INSERT INTO subtitles(media_id,library_id,kind,path,stream_index,format,lang,lang_source,forced,hi,text_based,status,association,present) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,'ok','certain',1) ON CONFLICT(path,stream_index) DO UPDATE SET "
-                    "media_id=excluded.media_id,format=excluded.format,lang=excluded.lang,lang_source=excluded.lang_source,"
-                    "forced=excluded.forced,hi=excluded.hi,text_based=excluded.text_based,present=1",
+                    "INSERT INTO subtitles(media_id,library_id,kind,path,stream_index,format,lang,lang_source,forced,hi,text_based,title,status,association,present) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'ok','certain',1) ON CONFLICT(path,stream_index) DO UPDATE SET "
+                    "media_id=excluded.media_id,format=excluded.format,forced=excluded.forced,hi=excluded.hi,text_based=excluded.text_based,"
+                    "title=excluded.title,present=1,detected_lang=NULL,"
+                    "lang=CASE WHEN subtitles.lang_source='content' AND subtitles.lang IN ('pt-PT','pt-BR') AND excluded.lang='pt' THEN subtitles.lang ELSE excluded.lang END,"
+                    "lang_source=CASE WHEN subtitles.lang_source='content' AND subtitles.lang IN ('pt-PT','pt-BR') AND excluded.lang='pt' THEN 'content' "
+                    "WHEN excluded.lang IS NOT NULL THEN 'stream' ELSE 'unknown' END",
                     (media_id, lib["id"], "embedded", sp, s.index, s.codec, s.lang, "stream" if s.lang else "unknown",
-                     int(s.forced), int(s.hi), int(s.text_based)))
+                     int(s.forced), int(s.hi), int(s.text_based), s.title))
         # recalcular verificação temporal das externas desse vídeo com a duração nova
         self._recheck_external_sync(media_id)
+
+    def refine_embedded_pt(self, path: str, media_id: int) -> int:
+        """Faixas embutidas com idioma «pt» genérico: extrai o texto e estima pt-PT/pt-BR pelo conteúdo.
+        `detected_lang` fica preenchido após a tentativa para não repetir a leitura (cara em ficheiros grandes)."""
+        rows_ = self.db.query("SELECT id,stream_index FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1 "
+                              "AND lang='pt' AND text_based=1 AND detected_lang IS NULL", (media_id,))
+        n = 0
+        for r in rows_:
+            data = fp.extract_subtitle_text(path, r["stream_index"], self.ffmpeg_bin)
+            parsed = parse_bytes(data, ".srt") if data else None
+            detected, _ = detect_language(parsed.text) if parsed and parsed.cues else (None, 0.0)
+            if detected in ("pt-PT", "pt-BR"):
+                self.db.execute("UPDATE subtitles SET lang=?, lang_source='content', detected_lang=? WHERE id=?", (detected, detected, r["id"]))
+                n += 1
+            else:
+                self.db.execute("UPDATE subtitles SET detected_lang='pt' WHERE id=?", (r["id"],))
+        return n
 
     def _recheck_external_sync(self, media_id: int) -> None:
         m = self.db.one("SELECT duration FROM media_items WHERE id=?", (media_id,))

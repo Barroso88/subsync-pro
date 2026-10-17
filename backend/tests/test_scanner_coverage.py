@@ -186,3 +186,37 @@ def test_generic_pt_undetermined_policy_and_revalidate(core, media_root, fake_pr
     n_probe = len(fake_probe)
     assert wait_job(core, core.jobs.submit("revalidate", "r", {}))["status"] == "done"
     assert len(fake_probe) == n_probe                                                      # relê legendas sem reexecutar ffprobe
+
+
+def test_embedded_generic_pt_refined_by_extracted_text(core, media_root, monkeypatch):
+    from app import ffprobe as fp
+    from tests.conftest import PT_BR_TEXT, PT_PT
+    probes = []
+    monkeypatch.setattr(fp, "probe", lambda path, b="ffprobe", timeout=60: fp.ProbeResult(
+        True, 3600.0, "h264", 1920, 1080, 24.0,
+        [fp.EmbeddedSub(3, "subrip", "pt", "por", None, False, False, True),
+         fp.EmbeddedSub(4, "subrip", "pt", "por", None, False, False, True)]))
+    texts = {3: make_srt(60, pool=PT_PT), 4: make_srt(60, pool=PT_BR_TEXT)}
+    calls = []
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda path, idx, b="ffmpeg", timeout=300: (calls.append(idx), texts[idx].encode())[1])
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    langs = {r["stream_index"]: (r["lang"], r["lang_source"]) for r in core.db.query("SELECT * FROM subtitles WHERE media_id=? AND kind='embedded'", (mid,))}
+    assert langs[3] == ("pt-PT", "content") and langs[4] == ("pt-BR", "content")
+    assert sorted(set(calls)) == [3, 4]
+    n = len(calls)
+    wait_job(core, core.jobs.submit("revalidate", "r", {}))
+    assert len(calls) == n                              # já resolvidas: não relê o ficheiro
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}])
+    assert cov.compute(core.db, core.settings, [mid])[mid]["missing"] == []
+
+
+def test_probe_title_disambiguates_pt_variant():
+    import json
+    from app import ffprobe as fp
+    def stream(i, title):
+        return {"index": i, "codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "por", **({"title": title} if title else {})}, "disposition": {}}
+    r = fp.parse_probe_json(json.dumps({"format": {"duration": "10"}, "streams": [
+        stream(1, "Português (Brasil)"), stream(2, "Portuguese (Portugal)"), stream(3, "European Portuguese"), stream(4, "Portuguese"), stream(5, None)]}))
+    assert [s.lang for s in r.subs] == ["pt-BR", "pt-PT", "pt-PT", "pt", "pt"]

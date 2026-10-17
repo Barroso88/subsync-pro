@@ -51,7 +51,7 @@ class App:
         self.transport = transport      # injeção para testes
         self.jobs = JobManager(self.db, cfg.max_jobs)
         self.jobs.mark_interrupted()
-        self.scanner = Scanner(self.db, self.settings, cfg.ffprobe_bin, cfg.ffprobe_workers)
+        self.scanner = Scanner(self.db, self.settings, cfg.ffprobe_bin, cfg.ffprobe_workers, cfg.ffmpeg_bin)
         self._providers: dict[str, Any] = {}
         self._limiters: dict[str, RateLimiter] = {}
         self._stop = threading.Event()

@@ -36,6 +36,7 @@ class AppConfig:
     max_jobs: int = field(default_factory=lambda: _env_int("SUBSYNC_MAX_JOBS", 2))
     ffprobe_workers: int = field(default_factory=lambda: _env_int("SUBSYNC_FFPROBE_WORKERS", 4))
     ffprobe_bin: str = field(default_factory=lambda: _env("SUBSYNC_FFPROBE", "ffprobe"))
+    ffmpeg_bin: str = field(default_factory=lambda: _env("SUBSYNC_FFMPEG", "ffmpeg"))
     auth_password: str = field(default_factory=lambda: _env("SUBSYNC_AUTH_PASSWORD"))
     log_level: str = field(default_factory=lambda: _env("SUBSYNC_LOG_LEVEL", "INFO"))
     static_dir: Path | None = field(
