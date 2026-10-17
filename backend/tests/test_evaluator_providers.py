@@ -119,7 +119,7 @@ def test_opensubtitles_search_params_and_parsing():
     q = SearchQuery("episode", "Show", season=1, episode=2, series_title="Show", moviehash="abcd", languages=["pt-PT", "en"])
     out = p.search(q)
     prm = dict(seen["url"].params)
-    assert prm["moviehash"] == "abcd" and prm["season_number"] == "1" and prm["episode_number"] == "2" and prm["query"] == "Show"
+    assert prm["moviehash"] == "abcd" and prm["season_number"] == "1" and prm["episode_number"] == "2" and prm["query"] == "show"
     assert prm["languages"] == "en,pt-pt" and prm["type"] == "episode"
     assert seen["h"]["api-key"] == "KEY"
     assert out[0].hash_match and out[0].language == "pt-PT" and out[0].file_id == "777" and out[0].download_count == 1234
@@ -231,3 +231,34 @@ def test_radarr_and_plex_parsing():
                   "poster": "arr:radarr:/MediaCover/1/poster.jpg"}]
     it = Plex("http://p", "T", maps, t, validate=False).items()
     assert it[0]["rating_key"] == "42" and it[0]["path"] == "/media/Filmes/F (2024)/F (2024).mkv"
+
+
+def test_opensubtitles_follows_normalising_redirect_within_domain():
+    hops = []
+
+    def h(req: httpx.Request):
+        hops.append(str(req.url))
+        if req.url.path.endswith("/subtitles") and "order_by" in str(req.url.params) and len(hops) == 1:
+            return httpx.Response(301, headers={"location": "https://api.opensubtitles.com/api/v1/subtitles?languages=en&query=x&type=movie"})
+        return httpx.Response(200, json={"data": []})
+
+    p, _ = os_provider(h)
+    assert p.search(SearchQuery("movie", "X", languages=["en"])) == [] and len(hops) == 2
+
+    def evil(req):
+        return httpx.Response(302, headers={"location": "https://evil.example.com/x"})
+    p, _ = os_provider(evil)
+    with pytest.raises(ProviderError, match="não autorizado"):
+        p.search(SearchQuery("movie", "X"))
+
+
+def test_opensubtitles_params_lowercase_sorted():
+    prm = OpenSubtitles.build_params(SearchQuery("movie", "Born To Be King", year=2000, languages=["pt-PT", "en"], moviehash="ABCDEF0123456789"))
+    assert list(prm) == sorted(prm) and prm["query"] == "born to be king" and prm["moviehash"] == "abcdef0123456789"
+    assert prm["languages"] == "en,pt-pt"
+
+
+def test_opensubtitles_invalid_json_error_has_http_status():
+    p, _ = os_provider(lambda r: httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"}))
+    with pytest.raises(ProviderError, match=r"HTTP 200, text/html"):
+        p.search(SearchQuery("movie", "X"))

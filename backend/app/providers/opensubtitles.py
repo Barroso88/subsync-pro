@@ -51,7 +51,18 @@ class OpenSubtitles(Provider):
             self.ctx.limiter.acquire()
         try:
             with self.ctx.http() as c:
-                r = c.request(method, f"{API}{path}", headers=self._headers(auth), timeout=20, **kw)
+                url = f"{API}{path}"
+                for _hop in range(4):
+                    r = c.request(method, url, headers=self._headers(auth), timeout=20, **kw)
+                    # a API normaliza os parâmetros (minúsculas/ordenados) com 301/302; seguimos só dentro do domínio oficial
+                    if r.status_code in (301, 302, 307, 308) and r.headers.get("location"):
+                        nxt = httpx.URL(url).join(r.headers["location"])
+                        if nxt.scheme != "https" or not (nxt.host or "").endswith(".opensubtitles.com"):
+                            raise ProviderError("Redirecionamento para domínio não autorizado.")
+                        url = str(nxt)
+                        kw = {k: v for k, v in kw.items() if k != "params"}
+                        continue
+                    break
         except httpx.HTTPError as e:
             msg = f"Erro de rede: {type(e).__name__}"
             self.ctx.record(ok=False, error=msg)
@@ -73,7 +84,8 @@ class OpenSubtitles(Provider):
         try:
             return r.json()
         except ValueError as e:
-            raise ProviderError("Resposta inválida do OpenSubtitles.") from e
+            ct = r.headers.get("content-type", "?").split(";")[0]
+            raise ProviderError(f"Resposta inválida do OpenSubtitles (HTTP {r.status_code}, {ct}).") from e
 
     def login(self) -> None:
         with self._lock:
@@ -120,7 +132,7 @@ class OpenSubtitles(Provider):
                 p["query"] = q.title
             if q.year:
                 p["year"] = q.year
-        return {k: v for k, v in sorted(p.items())}
+        return {k: (v.lower() if isinstance(v, str) else v) for k, v in sorted(p.items())}
 
     def search(self, q: SearchQuery) -> list[SubtitleResult]:
         j = self._request("GET", "/subtitles", params=self.build_params(q))
