@@ -180,7 +180,7 @@ def test_generic_pt_undetermined_policy_and_revalidate(core, media_root, fake_pr
     core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}])
     c = cov.compute(core.db, core.settings, [mid])[mid]
     assert c["missing"] == ["pt-PT"] and "pt" in c["covered"]
-    core.settings.set("generic_pt_counts", True)
+    core.settings.set("generic_pt_variant", "pt-PT")
     c = cov.compute(core.db, core.settings, [mid])[mid]
     assert c["missing"] == [] and c["fallback"] == {"pt-PT": "pt"}
     n_probe = len(fake_probe)
@@ -220,3 +220,19 @@ def test_probe_title_disambiguates_pt_variant():
     r = fp.parse_probe_json(json.dumps({"format": {"duration": "10"}, "streams": [
         stream(1, "Português (Brasil)"), stream(2, "Portuguese (Portugal)"), stream(3, "European Portuguese"), stream(4, "Portuguese"), stream(5, None)]}))
     assert [s.lang for s in r.subs] == ["pt-BR", "pt-PT", "pt-PT", "pt", "pt"]
+
+
+def test_generic_pt_variant_policy_only_covers_chosen_and_skips_extraction(core, media_root, monkeypatch):
+    from app import ffprobe as fp
+    calls = []
+    monkeypatch.setattr(fp, "probe", lambda path, b="ffprobe", timeout=60: fp.ProbeResult(
+        True, 3600.0, "h264", 1920, 1080, 24.0, [fp.EmbeddedSub(3, "subrip", "pt", "por", None, False, False, True)]))
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: calls.append(a) or None)
+    core.settings.set("generic_pt_variant", "pt-PT")
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    assert calls == []                                       # nada lido com o ffmpeg
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}])
+    c = cov.compute(core.db, core.settings, [mid])[mid]
+    assert c["missing"] == ["pt-BR"] and c["fallback"] == {"pt-PT": "pt"}      # só cobre a variante escolhida

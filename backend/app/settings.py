@@ -30,7 +30,7 @@ DEFAULTS: dict[str, Any] = {
         "subdl": {"enabled": False, "priority": 2, "max_results": 30,
                   "requests_per_minute": 20, "daily_download_limit": 50},
     },
-    "generic_pt_counts": False,        # «pt» sem variante conhecida conta como cobertura de pt-PT e pt-BR (assinalado)
+    "generic_pt_variant": "",          # "" = «pt» sem variante não conta | "pt-PT" | "pt-BR": variante assumida para «pt» genérico (assinalada ≈pt)
     "accept_pt_br_fallback": False,   # se faltar pt-PT, aceitar pt-BR (instalada como pt-BR, nunca renomeada)
     "translation": {
         "enabled": False,                  # permite o botão «Traduzir» nos resultados

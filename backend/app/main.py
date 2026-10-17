@@ -521,6 +521,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         elif k == "translation":
             if not isinstance(v, dict) or not isinstance(v.get("source_languages", []), list):
                 raise HTTPException(400, "Definições de tradução inválidas")
+        elif k == "generic_pt_variant" and v not in ("", "pt-PT", "pt-BR"):
+            raise HTTPException(400, "generic_pt_variant inválido")
         elif k == "hi_policy" and v not in ("include", "exclude", "only"):
             raise HTTPException(400, "hi_policy inválido")
         elif k == "scan_interval_minutes" and (not isinstance(v, int) or v < 0 or v > 10080):

@@ -59,7 +59,12 @@ export default function SettingsPage() {
           <div className="grid sm:grid-cols-2 gap-4 mt-5">
             <Toggle checked={d.embedded_counts} onChange={(v) => set("embedded_counts", v)} label="Legendas embutidas contam para a cobertura" hint="Se desligado, só ficheiros externos satisfazem um idioma." />
             <Toggle checked={d.prefer_full} onChange={(v) => set("prefer_full", v)} label="Preferir legendas completas" hint="Forçadas nunca contam como cobertura do idioma." />
-            <Toggle checked={!!d.generic_pt_counts} onChange={(v) => set("generic_pt_counts", v)} label="Contar «pt» sem variante como pt-PT e pt-BR" hint="Para legendas portuguesas cujo nome e conteúdo não indicam a variante. Fica assinalado (≈pt) na cobertura." />
+            <Field label="Legendas «pt» sem variante" hint="Nome/faixa só diz «pt» e o conteúdo não permite saber se é de Portugal ou do Brasil. Assumir uma variante evita ler os vídeos para a estimar. Fica assinalado (≈pt).">
+              <select className="input" value={d.generic_pt_variant ?? ""} onChange={(e) => set("generic_pt_variant", e.target.value)}>
+                <option value="">Não contar (ficam em falta até estimar)</option>
+                <option value="pt-PT">Assumir pt-PT</option>
+                <option value="pt-BR">Assumir pt-BR</option>
+              </select></Field>
             <Toggle checked={!!d.accept_pt_br_fallback} onChange={(v) => set("accept_pt_br_fallback", v)} label="Aceitar pt-BR quando faltar pt-PT" hint="Pesquisa também pt-BR; uma legenda pt-BR conta como cobertura de pt-PT (assinalada) e é guardada como .pt-BR.srt, nunca renomeada. Em lote, pt-PT tem sempre prioridade." />
             <Toggle checked={!!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, enabled: v })} label="Permitir tradução automática (DeepL)" hint="Mostra «Traduzir» nos resultados noutros idiomas. Requer chave DeepL em Fornecedores. O texto é enviado ao DeepL." />
             <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de inglês se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome caracteres do DeepL." />
