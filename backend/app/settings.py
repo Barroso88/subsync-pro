@@ -31,6 +31,11 @@ DEFAULTS: dict[str, Any] = {
                   "requests_per_minute": 20, "daily_download_limit": 50},
     },
     "accept_pt_br_fallback": False,   # se faltar pt-PT, aceitar pt-BR (instalada como pt-BR, nunca renomeada)
+    "translation": {
+        "enabled": False,                  # permite o botão «Traduzir» nos resultados
+        "auto_fallback": False,            # em lote: se não houver pt, traduzir a partir de inglês (fica «por confirmar»)
+        "source_languages": ["en"],        # idiomas de origem aceites
+    },
     "audio_sync": {"enabled": False},
 }
 

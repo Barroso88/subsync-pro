@@ -27,6 +27,7 @@
   <Config Name="OpenSubtitles utilizador" Target="OPENSUBTITLES_USERNAME" Default="" Mode="" Description="Necessário para descarregar" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="OpenSubtitles palavra-passe" Target="OPENSUBTITLES_PASSWORD" Default="" Mode="" Description="Necessário para descarregar" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="SubDL API key" Target="SUBDL_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="DeepL API key" Target="DEEPL_API_KEY" Default="" Mode="" Description="Opcional: tradução automática de legendas (chaves gratuitas terminam em :fx)" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Plex token" Target="PLEX_TOKEN" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Radarr API key" Target="RADARR_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Sonarr API key" Target="SONARR_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>

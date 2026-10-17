@@ -17,6 +17,7 @@ Gestor self-hosted de legendas para bibliotecas Plex/Radarr/Sonarr: inventaria f
 | Fornecedores **OpenSubtitles.com** (API REST oficial v1) e **SubDL** (2.º adapter, ⚠️ só testado com respostas simuladas) com pesquisa por hash (só OpenSubtitles) (moviehash), IDs, temporada/episódio; limites de pedidos/min, downloads/dia e quota do fornecedor | ✅ (requer as suas credenciais) |
 | Avaliação: compatibilidade (hash / provável / fraca / incompatível) **separada** de sincronização (validada vs referência / não confirmada / suspeita / inconclusiva), pontuação explicável por fatores | ✅ |
 | Download seguro: staging, deteção de HTML/vazio/binário/corrompido, ZIP seguro (sem path traversal, anti-bomba), conversão para UTF-8, pré-visualização do destino, conflitos (cancelar / manter ambas / substituir com cópia de segurança), escrita atómica, nomes Plex-friendly (`Nome.pt-PT.srt`, `.forced`, `.sdh`) | ✅ |
+| Tradução automática via **DeepL** (inglês → pt-PT/pt-BR e outros): só o texto, tempos intactos, sempre assinalada, «por confirmar», com verificação da quota antes de traduzir | ✅ (requer chave DeepL; só testado com respostas simuladas) |
 | Lote com resumo + confirmação, em background, com concorrência limitada; modo «preparar para revisão» ou «instalar melhores» | ✅ |
 | Tarefas: progresso, item atual, cancelar, repetir, histórico; reinício marca tarefas a meio como «interrompidas» | ✅ |
 | Plex (refresh do item após instalar, IDs, posters), Radarr, Sonarr, mapeamento de caminhos, proteção SSRF | ✅ (requer os seus serviços) |
@@ -70,6 +71,7 @@ Abra `http://<servidor>:8484` → **Definições → Bibliotecas → Adicionar**
 | `SUBSYNC_LOG_LEVEL` | `INFO` | Logs JSON estruturados (segredos são mascarados) |
 | `OPENSUBTITLES_API_KEY` / `_USERNAME` / `_PASSWORD` | | API key (pesquisa) + conta (descarregar) |
 | `SUBDL_API_KEY` | | Chave gratuita do SubDL |
+| `DEEPL_API_KEY` | | Tradução automática (plano gratuito: 500 000 caracteres/mês; chaves gratuitas terminam em `:fx`) |
 | `PLEX_TOKEN`, `RADARR_API_KEY`, `SONARR_API_KEY` | | Integrações opcionais |
 
 Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`, modo `0600`, nunca devolvidos pela API). Variáveis de ambiente têm prioridade.
@@ -83,11 +85,22 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 - Contentor: sem `privileged`, sem socket Docker, `cap_drop: ALL`, `no-new-privileges`, rootfs só de leitura, utilizador não-root.
 - **Não exponha a porta à Internet.** Sem proxy reverso com TLS, a palavra-passe viaja em claro na LAN.
 
+## Tradução automática (DeepL)
+
+Desligada por omissão (Definições → Idiomas). Quando não há legenda no idioma pedido, o botão **Traduzir** descarrega uma legenda noutro idioma e traduz o texto, **mantendo os tempos originais**. Notas:
+- O texto das legendas é **enviado ao DeepL** (terceiro). Não use se isso não for aceitável.
+- É sempre assinalada como tradução automática (fator de pontuação negativo, nota na pré-visualização, registo no histórico) e fica **por confirmar**; nunca é instalada sem confirmação, nem em lote.
+- Antes de traduzir verifica-se a quota (`/v2/usage`); sem quota suficiente nada é enviado.
+- Itálicos/formatação são removidos; diálogo com travessões é traduzido fala a fala; quebras de linha são refeitas (~42 caracteres).
+- A tradução herda a sincronização da original (nunca é «validada» por si só).
+- Opção «em lote, traduzir de inglês se não houver legenda»: desligada por omissão; gasta caracteres da quota.
+
 ## Limitações conhecidas
 
 - Não foi possível testar contra a API real do OpenSubtitles neste ambiente (sem credenciais): o adapter foi escrito segundo a documentação v1 e testado com respostas simuladas. Valide com a sua API key em **Fornecedores → Testar ligação**.
 - A imagem Docker não foi construída neste ambiente (sem Docker); o Dockerfile deve ser validado com `docker compose build`.
 - Fornecedores: OpenSubtitles e SubDL. Legendas.tv/Addic7ed/Subf2m não têm API oficial (só scraping), pelo que não estão incluídas.
+- O adapter DeepL foi testado só com respostas simuladas (sem chave real neste ambiente).
 - O SubDL devolve «PT» sem distinguir Portugal/Brasil: a variante é estimada pelo conteúdo após o download (heurística).
 - «Aceitar pt-BR quando faltar pt-PT» (desligado por omissão): conta como cobertura mas fica assinalado `≈pt-BR`.
 - Legendas gráficas (PGS/VobSub) são detetadas mas não analisadas (nem extraídas como referência).

@@ -21,6 +21,7 @@ export default function Providers() {
       {q.isLoading && <Skeleton className="h-64" />}
       {q.isError && <ErrorBox error={q.error} retry={() => q.refetch()} />}
       <div className="space-y-4">{q.data?.map((p) => <ProviderCard key={p.name} p={p} />)}</div>
+      <TranslationCard />
       <div className="card p-4 mt-4 text-sm text-mute flex gap-3"><PlugZap size={18} className="shrink-0 text-dim mt-0.5" /><div>A arquitetura usa <i>adapters</i>: novos fornecedores implementam a interface <code className="text-fg">Provider</code> em <code className="text-fg">backend/app/providers</code> e ficam registados em <code className="text-fg">registry.py</code>.</div></div>
     </>
   );
@@ -84,6 +85,49 @@ function ProviderCard({ p }: { p: P }) {
         <button className="btn-ghost" onClick={() => testM.mutate()} disabled={testM.isPending}>{testM.isPending && <Loader2 size={14} className="animate-spin" />}Testar ligação</button>
         <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>Guardar</button>
       </div>
+    </div>
+  );
+}
+
+interface Tr { enabled: boolean; configured: boolean; source: string; plan: string | null; usage: { used: number; limit: number; remaining: number } | null; error: string | null }
+
+function TranslationCard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [key, setKey] = useState("");
+  const q = useQuery({ queryKey: ["translation"], queryFn: () => api.get<Tr>("/translation") });
+  const save = useMutation({
+    mutationFn: () => api.put("/secrets", { values: { deepl_api_key: key.trim() } }),
+    onSuccess: () => { toast("ok", "Chave DeepL guardada"); setKey(""); qc.invalidateQueries({ queryKey: ["translation"] }); },
+    onError: (e: Error) => toast("bad", e.message),
+  });
+  const t = q.data;
+  const pct = t?.usage && t.usage.limit ? Math.min(100, (t.usage.used / t.usage.limit) * 100) : 0;
+  return (
+    <div className="card p-5 mt-4 animate-rise">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2.5 flex-wrap"><h2 className="font-semibold">DeepL · tradução automática</h2>
+            <Badge tone={!t?.configured ? "warn" : t.error ? "bad" : "ok"}>{!t?.configured ? "Sem chave" : t.error ? "Erro" : `Ligado (${t.plan === "free" ? "plano gratuito" : "plano pago"})`}</Badge></div>
+          <div className="text-xs text-mute mt-1 max-w-2xl">Traduz legendas (ex.: inglês → pt-PT/pt-BR) mantendo os tempos. O texto das legendas é enviado ao DeepL. O resultado fica sempre assinalado como tradução automática e «por confirmar». Ative em Definições → Idiomas.</div>
+        </div>
+      </div>
+      <div className="mt-4 max-w-xl">
+        <Field label="API key do DeepL" hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}). Chaves gratuitas terminam em :fx.` : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>
+          <div className="flex gap-2"><div className="relative flex-1"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
+            <input className="input pl-9" type="password" autoComplete="off" disabled={t?.source === "env"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={t?.configured ? "•••••••• (vazio = manter)" : ""} /></div>
+            <button className="btn-primary" disabled={!key.trim() || save.isPending} onClick={() => save.mutate()}>Guardar</button>
+            <button className="btn-ghost" onClick={() => q.refetch()} disabled={q.isFetching}>{q.isFetching && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
+        </Field>
+      </div>
+      {t?.error && <div className="mt-3 text-sm text-bad flex gap-2"><XCircle size={16} className="mt-0.5" />{t.error}</div>}
+      {t?.usage && (
+        <div className="mt-4 max-w-xl">
+          <div className="flex justify-between text-xs text-mute mb-1.5"><span>Caracteres usados este período</span><span className="tabular-nums">{t.usage.used.toLocaleString("pt-PT")} / {t.usage.limit.toLocaleString("pt-PT")}</span></div>
+          <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className={`h-full rounded-full ${pct > 90 ? "bg-bad" : "bg-accent"}`} style={{ width: `${pct}%` }} /></div>
+          <div className="text-xs text-dim mt-1.5">Restam {t.usage.remaining.toLocaleString("pt-PT")} caracteres. Um filme usa tipicamente 40 000–60 000 (estimativa).</div>
+        </div>
+      )}
     </div>
   );
 }

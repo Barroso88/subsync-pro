@@ -73,6 +73,7 @@ SECRET_KEYS = {
     "opensubtitles_username": "OPENSUBTITLES_USERNAME",
     "opensubtitles_password": "OPENSUBTITLES_PASSWORD",
     "subdl_api_key": "SUBDL_API_KEY",
+    "deepl_api_key": "DEEPL_API_KEY",
     "plex_token": "PLEX_TOKEN",
     "radarr_api_key": "RADARR_API_KEY",
     "sonarr_api_key": "SONARR_API_KEY",

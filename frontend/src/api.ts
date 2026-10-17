@@ -51,7 +51,7 @@ export interface Evaluation {
   sync: "validated_reference" | "not_confirmed" | "suspect" | "inconclusive"; sync_label: string;
   factors: Factor[]; duration_diff_s: number | null; notes: string[]; disclaimer: string;
   alignment: null | { reference: string; offset_ms: number; match_ratio: number; drift_ms: number; events_compared: number };
-  writable_error?: string | null; existing?: string[]; encoding?: string; library?: string; cue_count?: number;
+  writable_error?: string | null; translation?: { engine: string; source_lang: string | null; target: string; characters: number }; existing?: string[]; encoding?: string; library?: string; cue_count?: number;
 }
 export interface SubResult {
   provider: string; file_id: string; language: string | null; release: string; file_name: string; hash_match: boolean;

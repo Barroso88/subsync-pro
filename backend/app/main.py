@@ -378,6 +378,18 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def prepare(mid: int, b: PrepareIn):
         return core.prepare(mid, b.result, b.language)
 
+    class TranslateIn(BaseModel):
+        result: dict
+        target: str
+
+    @api.get("/translation")
+    def translation_status():
+        return core.translation_status()
+
+    @api.post("/media/{mid}/translate")
+    def translate(mid: int, b: TranslateIn):
+        return core.translate_prepare(mid, b.result, b.target)
+
     class InstallIn(BaseModel):
         policy: str = "fail"
 
@@ -496,6 +508,9 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                     validate_service_url(v["url"])
                 except IntegrationError as e:
                     raise HTTPException(400, str(e))
+        elif k == "translation":
+            if not isinstance(v, dict) or not isinstance(v.get("source_languages", []), list):
+                raise HTTPException(400, "Definições de tradução inválidas")
         elif k == "hi_policy" and v not in ("include", "exclude", "only"):
             raise HTTPException(400, "hi_policy inválido")
         elif k == "scan_interval_minutes" and (not isinstance(v, int) or v < 0 or v > 10080):

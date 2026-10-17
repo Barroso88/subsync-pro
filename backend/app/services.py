@@ -28,6 +28,7 @@ from .safepaths import PathSecurityError, is_within, require_within
 from .scanner import Scanner, ScanAborted
 from .settings import Settings
 from .subtitles.parser import ParsedSub, parse_bytes
+from .translation import TARGETS, DeepL, DeepLError, count_chars, to_srt, translate_cues
 from .util import add_event, log, now, scrub
 
 TIER_ORDER = {"incompatible": 0, "weak": 1, "probable": 2, "hash": 3}
@@ -434,27 +435,107 @@ class App:
                     lang = dl_
                     ev.notes.append(f"Variante «{dl_}» estimada pelo conteúdo (o fornecedor não a indicou).")
             ev = evaluate_content(ev, media, v.parsed, an, self._reference_for(media, lang))
-            staged = stage(self.cfg.staging_dir, v)
-            lib = self.db.one("SELECT * FROM libraries WHERE id=?", (media["library_id"],))
-            subs = rows(self.db.query("SELECT * FROM subtitles WHERE media_id=?", (media_id,)))
-            try:
-                plan = plan_install(media, lang, self.writable_roots(), subs, forced=r.forced, hi=r.hearing_impaired, ext=v.ext)
-                dest, conflict, existing = plan.dest, plan.conflict, plan.existing
-                writable_err = None
-            except PathSecurityError as e:
-                dest = os.path.join(media["dir"], build_dest_name(media["path"], lang, forced=r.forced, hi=r.hearing_impaired, ext=v.ext))
-                conflict, existing, writable_err = None, [], str(e)
-            evd = ev.to_dict()
-            evd.update({"encoding": v.encoding, "writable_error": writable_err, "existing": existing,
-                        "library": lib["name"] if lib else None, "cue_count": an.cue_count})
-            self.db.execute(
-                "UPDATE downloads SET status='prepared', dest_path=?, score=?, evaluation=?, staged_path=?, conflict=?, error=NULL WHERE id=?",
-                (dest, ev.score, json.dumps(evd), staged, conflict, did))
-            return self.get_download(did)
+            return self._finish_prepare(did, media, r, lang, v, ev, an)
         except (ProviderError, InvalidDownload, ServiceError) as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
             add_event(self.db, "download", f"Falhou ({r.provider} #{r.file_id}): {e}", "error", media_id)
             raise ServiceError(str(e), getattr(e, "status", 502 if isinstance(e, ProviderError) else 422))
+        except Exception as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
+            raise
+
+    def _finish_prepare(self, did: int, media: dict, r: SubtitleResult, lang: str | None, v, ev, an, extra: dict | None = None) -> dict:
+        staged = stage(self.cfg.staging_dir, v)
+        lib = self.db.one("SELECT * FROM libraries WHERE id=?", (media["library_id"],))
+        subs = rows(self.db.query("SELECT * FROM subtitles WHERE media_id=?", (media["id"],)))
+        try:
+            plan = plan_install(media, lang, self.writable_roots(), subs, forced=r.forced, hi=r.hearing_impaired, ext=v.ext)
+            dest, conflict, existing = plan.dest, plan.conflict, plan.existing
+            writable_err = None
+        except PathSecurityError as e:
+            dest = os.path.join(media["dir"], build_dest_name(media["path"], lang, forced=r.forced, hi=r.hearing_impaired, ext=v.ext))
+            conflict, existing, writable_err = None, [], str(e)
+        evd = ev.to_dict()
+        evd.update({"encoding": v.encoding, "writable_error": writable_err, "existing": existing,
+                    "library": lib["name"] if lib else None, "cue_count": an.cue_count})
+        if extra:
+            evd.update(extra)
+        self.db.execute(
+            "UPDATE downloads SET status='prepared', lang=?, dest_path=?, score=?, evaluation=?, staged_path=?, conflict=?, error=NULL WHERE id=?",
+            (lang, dest, ev.score, json.dumps(evd), staged, conflict, did))
+        return self.get_download(did)
+
+    # ---- tradução automática (DeepL) -----------------------------------------
+    def _deepl(self) -> DeepL:
+        key = self.secrets.get("deepl_api_key")
+        if not key:
+            raise ServiceError("API key do DeepL não configurada (Fornecedores → DeepL).", 400)
+        return DeepL(key, self.transport)
+
+    def translation_status(self) -> dict:
+        cfg = self.settings.get("translation")
+        st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self.secrets.get("deepl_api_key")),
+              "source": self.secrets.source("deepl_api_key"), "targets": list(TARGETS), "usage": None, "error": None, "plan": None}
+        if st["configured"]:
+            st["plan"] = "free" if self.secrets.get("deepl_api_key").endswith(":fx") else "pro"
+            try:
+                u = self._deepl().usage()
+                st["usage"] = {"used": u.used, "limit": u.limit, "remaining": u.remaining}
+            except DeepLError as e:
+                st["error"] = str(e)
+        return st
+
+    def translate_prepare(self, media_id: int, result: dict, target: str) -> dict:
+        """Descarrega a legenda de origem, traduz o texto (tempos intactos) e deixa-a «por confirmar»."""
+        if not self.settings.get("translation")["enabled"]:
+            raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
+        if target not in TARGETS:
+            raise ServiceError("Idioma de destino não suportado para tradução.")
+        media = self.media_dict(media_id)
+        try:
+            r = SubtitleResult(**{k: v for k, v in result.items() if k in SubtitleResult.__dataclass_fields__})
+        except TypeError:
+            raise ServiceError("Resultado inválido.")
+        if r.provider not in PROVIDERS:
+            raise ServiceError("Fornecedor desconhecido.")
+        src = normalize_lang(r.language)
+        if src == target:
+            raise ServiceError("A legenda já está no idioma de destino.")
+        deepl = self._deepl()
+        self._quota_ok(r.provider)
+        did = self.db.execute(
+            "INSERT INTO downloads(media_id,provider,provider_file_id,lang,release,file_name,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (media_id, r.provider, str(r.file_id), target, r.release[:200], r.file_name[:200], "preparing", now())).lastrowid
+        try:
+            df = self.provider(r.provider).download(r)
+            self._count_download(r.provider)
+            v = validate_download(df.name, df.data, media)
+            from .subtitles.parser import analyze
+            from .evaluator import Factor
+            n_chars = count_chars(v.parsed.cues)
+            usage = deepl.usage()
+            if usage.limit and n_chars > usage.remaining:
+                raise ServiceError(f"Quota DeepL insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
+            cues, sent = translate_cues(v.parsed.cues, target, src, deepl)
+            text = to_srt(cues)
+            tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
+            s = self.settings.all()
+            ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
+            an = analyze(tv.parsed, media.get("duration"), size=len(text))
+            ev = evaluate_content(ev, media, tv.parsed, an, self._reference_for(media, target))
+            ev.score = max(0, ev.score - 15)
+            ev.factors.append(Factor("Tradução automática (DeepL): qualidade inferior a uma legenda humana", -15, "negative"))
+            ev.notes.append(f"Traduzida de «{src or 'idioma desconhecido'}» para «{target}»; os tempos são os da legenda original. "
+                            "Itálicos e formatação foram removidos. Reveja antes de usar.")
+            extra = {"translation": {"engine": "deepl", "source_lang": src, "target": target, "characters": sent,
+                                      "source_file": df.name}}
+            add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, DeepL)", "info", media_id)
+            return self._finish_prepare(did, media, r, target, tv, ev, an, extra)
+        except (ProviderError, InvalidDownload, ServiceError, DeepLError) as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
+            add_event(self.db, "translation", f"Tradução falhou: {e}", "error", media_id)
+            st = getattr(e, "status", 502 if isinstance(e, (ProviderError, DeepLError)) else 422)
+            raise ServiceError(str(e), st)
         except Exception as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
             raise
@@ -571,6 +652,9 @@ class App:
                 good = [x for x in res["results"] if x["result"]["language"] in allowed and not x["result"]["forced"]
                         and TIER_ORDER[x["evaluation"]["compat"]] >= min_rank and x["evaluation"]["compat"] != "incompatible"]
                 good.sort(key=lambda x: x["result"]["language"] != lang)   # idioma pedido primeiro; fallback só se não houver
+                if not good and self._can_auto_translate(lang):
+                    if self._batch_translate(mid, lang, out):
+                        continue
                 if not good:
                     out["no_match"] += 1
                     continue
@@ -601,6 +685,33 @@ class App:
         out["details"] = out["details"][:50]
         add_event(self.db, "batch", f"Lote concluído: {out['installed']} instaladas, {out['prepared']} por confirmar, {out['no_match']} sem resultado adequado.")
         return out
+
+    def _can_auto_translate(self, lang: str) -> bool:
+        t = self.settings.get("translation")
+        return bool(t["enabled"] and t["auto_fallback"] and lang in TARGETS and self.secrets.get("deepl_api_key"))
+
+    def _batch_translate(self, mid: int, lang: str, out: dict) -> bool:
+        """Sem legenda no idioma pedido: traduz a melhor de um idioma de origem. Fica SEMPRE «por confirmar»."""
+        sources = self.settings.get("translation")["source_languages"]
+        try:
+            res = self.search(mid, sources)
+        except ServiceError:
+            return False
+        cand = [x for x in res["results"] if x["result"]["language"] in sources and not x["result"]["forced"]
+                and TIER_ORDER[x["evaluation"]["compat"]] >= TIER_ORDER["probable"]]
+        if not cand:
+            return False
+        try:
+            self.translate_prepare(mid, cand[0]["result"], lang)
+        except ServiceError as e:
+            out["errors"] += 1
+            out["details"].append({"media_id": mid, "lang": lang, "error": str(e)})
+            if e.status == 429:
+                raise
+            return True
+        out["prepared"] += 1
+        out["translated"] = out.get("translated", 0) + 1
+        return True
 
     # ---- revalidação de legendas existentes ---------------------------------
     def _job_revalidate(self, ctx: JobContext, p: dict) -> dict:

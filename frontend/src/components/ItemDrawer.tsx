@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages } from "lucide-react";
 import { api, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
 import { useMeta } from "../hooks";
@@ -111,6 +111,17 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
   const [prepared, setPrepared] = useState<Download | null>(null);
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get<Record<string, any>>("/settings") });
   const configured: string[] = settings.data ? settings.data.languages.map((l: any) => l.code) : [];
+  const tr = useQuery({ queryKey: ["translation"], queryFn: () => api.get<any>("/translation"), enabled: !!settings.data?.translation?.enabled });
+  const targets: string[] = configured.filter((c) => ["pt-PT", "pt-BR", "es", "fr", "de", "it", "nl"].includes(c));
+  const canTranslate = !!settings.data?.translation?.enabled && tr.data?.configured && targets.length > 0;
+  const [target, setTarget] = useState<string>("");
+  const [askTr, setAskTr] = useState<Candidate | null>(null);
+  useEffect(() => { if (!target && targets.length) setTarget(targets[0]); }, [targets.join(",")]);
+  const trans = useMutation({
+    mutationFn: (c: Candidate) => api.post<Download>(`/media/${d.id}/translate`, { result: c.result, target }),
+    onSuccess: (r) => { setPrepared(r); setAskTr(null); qc.invalidateQueries({ queryKey: ["downloads"] }); qc.invalidateQueries({ queryKey: ["translation"] }); },
+    onError: (e: Error) => { toast("bad", e.message); setAskTr(null); },
+  });
   const search = useMutation({
     mutationFn: () => api.post<SearchRes>(`/media/${d.id}/search`, { languages: langs }),
     onSuccess: setRes, onError: (e: Error) => toast("bad", e.message),
@@ -141,14 +152,34 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       ))}
       {search.isPending && <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-24" />)}</div>}
       {res && !search.isPending && res.results.length === 0 && !res.errors.length && <Empty icon={<Search size={20} />} title="Sem resultados" hint="O fornecedor não devolveu legendas para os idiomas escolhidos." />}
-      {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => prep.mutate(c)} busy={prep.isPending} />)}
+      {res && canTranslate && res.results.length > 0 && !res.results.some((c) => c.result.language === target) && (
+        <div className="card border-info/30 bg-info/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-info shrink-0 mt-0.5" /><div>Sem resultados em <b>{target}</b>. Pode traduzir uma legenda de outro idioma (botão «Traduzir» no resultado).</div></div>
+      )}
+      {res && canTranslate && (
+        <div className="flex items-center gap-2 text-xs text-mute"><Languages size={14} />Traduzir para
+          <select className="input !h-7 !w-auto !text-xs" value={target} onChange={(e) => setTarget(e.target.value)}>{targets.map((t) => <option key={t}>{t}</option>)}</select></div>
+      )}
+      {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => prep.mutate(c)} busy={prep.isPending}
+        onTranslate={canTranslate && c.result.language !== target ? () => setAskTr(c) : undefined} />)}
+      <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (DeepL)`}
+        footer={<><button className="btn-ghost" onClick={() => setAskTr(null)}>Cancelar</button>
+          <button className="btn-primary" disabled={trans.isPending} onClick={() => askTr && trans.mutate(askTr)}>{trans.isPending && <Loader2 size={14} className="animate-spin" />}Descarregar e traduzir</button></>}>
+        <div className="space-y-3 text-sm">
+          <div>Vai descarregar <b className="break-all">{askTr?.result.release || askTr?.result.file_name}</b> ({askTr?.result.language}) e traduzir o texto para <b>{target}</b>, mantendo os tempos.</div>
+          <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
+            <div>• O texto da legenda é enviado ao DeepL.</div>
+            <div>• Consome tipicamente 40 000–60 000 caracteres da sua quota{tr.data?.usage ? ` (restam ${tr.data.usage.remaining.toLocaleString("pt-PT")})` : ""}.</div>
+            <div>• Fica «por confirmar» e assinalada como <b>tradução automática</b>; reveja a pré-visualização antes de instalar.</div>
+          </div>
+        </div>
+      </Modal>
       <DetailModal c={detail} meta={meta} onClose={() => setDetail(null)} onPick={(c) => prep.mutate(c)} busy={prep.isPending} />
       <PreviewModal dl={prepared} onClose={() => setPrepared(null)} writable={d.library_writable} onDone={() => { qc.invalidateQueries({ queryKey: ["media", d.id] }); qc.invalidateQueries(); }} />
     </div>
   );
 }
 
-function ResultCard({ c, meta, onOpen, onPick, busy }: { c: Candidate; meta: any; onOpen: () => void; onPick: () => void; busy: boolean }) {
+function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candidate; meta: any; onOpen: () => void; onPick: () => void; busy: boolean; onTranslate?: () => void }) {
   const r = c.result, ev = c.evaluation;
   return (
     <div className={cx("card p-3.5 space-y-2.5 hover:border-mute/40 transition-colors", ev.compat === "incompatible" && "opacity-70")}>
@@ -172,6 +203,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy }: { c: Candidate; meta: any
       </div>
       <div className="flex gap-2 justify-end">
         <button className="btn-ghost" onClick={onOpen}>Detalhes</button>
+        {onTranslate && <button className="btn-ghost" disabled={busy || ev.compat === "incompatible"} onClick={onTranslate}><Languages size={14} />Traduzir</button>}
         <button className="btn-primary" disabled={busy || ev.compat === "incompatible"} onClick={onPick} title={ev.compat === "incompatible" ? "Provavelmente incompatível" : ""}>
           {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}Descarregar e pré-visualizar
         </button>
@@ -231,6 +263,10 @@ export function PreviewModal({ dl, onClose, writable, onDone }: { dl: Download |
           <div className="font-mono text-[12.5px] break-all">{dl.dest_path}</div>
           <div className="text-xs text-mute">Biblioteca: {ev?.library ?? "—"} · {ev?.cue_count} eventos · codificação original {ev?.encoding} → guardada em UTF-8</div>
         </div>
+        {ev?.translation && (
+          <div className="rounded-lg border border-warn/40 bg-warn/10 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-warn shrink-0 mt-0.5" />
+            <div><b>Tradução automática ({ev.translation.engine === "deepl" ? "DeepL" : ev.translation.engine})</b> de «{ev.translation.source_lang ?? "?"}» para «{ev.translation.target}» · {ev.translation.characters.toLocaleString("pt-PT")} caracteres. Os tempos são os da legenda original; a qualidade é inferior à de uma legenda humana.</div></div>
+        )}
         {blocked && <div className="flex gap-2 text-sm text-bad bg-bad/10 rounded-lg p-3"><ShieldAlert size={16} className="shrink-0 mt-0.5" />{ev.writable_error} Ative a escrita nesta biblioteca em Definições.</div>}
         {conflict && (
           <div className="rounded-lg border border-warn/40 bg-warn/10 p-3.5 space-y-2.5">
