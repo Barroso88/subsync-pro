@@ -87,7 +87,7 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 
 ## Webhooks do Radarr/Sonarr (novo ficheiro → procurar legenda)
 
-No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On Import** e **On Upgrade**, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
+No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On File Import** e **On File Upgrade** no Radarr — **On Import**/**On Upgrade** no Sonarr —, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
 
 ## Leitura dos vídeos
 

@@ -276,9 +276,9 @@ function WebhookBox({ name }: { name: "radarr" | "sonarr" }) {
       {open && info.data && (
         <div className="space-y-3">
           <ol className="text-xs text-mute list-decimal pl-4 space-y-1">
-            <li>No {label}: <b className="text-fg">Settings → Connect → + → Webhook</b>.</li>
-            <li>Ative <b className="text-fg">On Import</b> e <b className="text-fg">On Upgrade</b> (os restantes eventos podem ficar desligados). Método <b className="text-fg">POST</b>.</li>
-            <li>Preencha o URL, o utilizador e a palavra-passe abaixo e use <b className="text-fg">Test</b>: a app responde 202.</li>
+            <li>No {label}: <b className="text-fg">Settings → Connect → +</b> (cartão com o sinal +) <b className="text-fg">→ Webhook</b>.</li>
+            <li>Ative <b className="text-fg">{name === "radarr" ? "On File Import" : "On Import"}</b> e <b className="text-fg">{name === "radarr" ? "On File Upgrade" : "On Upgrade"}</b> (os restantes eventos podem ficar desligados). Dê um nome (ex.: SubSync), método <b className="text-fg">POST</b>.</li>
+            <li>Preencha <b className="text-fg">Webhook URL</b>, <b className="text-fg">Username</b> e <b className="text-fg">Password</b> com os valores abaixo, use <b className="text-fg">Test</b> (a app responde 202) e depois <b className="text-fg">Save</b>.</li>
             <li>O endereço deve ser o que o {label} consegue alcançar (o IP do Unraid e a porta desta app).</li>
             <li>Em Downloads automáticos, ative a procura automática para a app também procurar a legenda (por omissão só analisa o ficheiro).</li>
           </ol>
