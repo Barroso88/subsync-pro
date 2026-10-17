@@ -542,16 +542,16 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         missing_pref = sum(1 for v in covs.values() if v["missing"])
         suspect = sum(1 for v in covs.values() if v["suspect"])
         unverified = sum(1 for v in covs.values() if v["unverified"])
-        # contagem direta por variante (independente do fallback pt-BR→pt-PT)
+        # mesmo cálculo da «cobertura por idioma» (coverage.compute): cartões e barras coincidem sempre
         kinds = {r["id"]: r["kind"] for r in db.query("SELECT id,kind FROM media_items WHERE present=1")}
-        embedded_ok = bool(s["embedded_counts"])
-        variant: dict[str, dict[str, set]] = {"pt-PT": {"movie": set(), "episode": set()}, "pt-BR": {"movie": set(), "episode": set()}}
-        for sub in db.query("SELECT * FROM subtitles WHERE present=1 AND media_id IS NOT NULL AND lang IN ('pt-PT','pt-BR')"):
-            if sub["media_id"] in kinds and cov.usable(dict(sub), embedded_ok):
-                variant[sub["lang"]][kinds[sub["media_id"]]].add(sub["media_id"])
-        assumed = {k: sum(1 for c in covs.values() if k in c.get("fallback", {})) for k in variant}   # cobertos por assunção (≈pt / ≈pt-BR)
-        by_variant = {k: {"assumed": assumed[k], "movies": len(v["movie"]), "episodes": len(v["episode"]), "total": len(v["movie"]) + len(v["episode"]),
-                          "pct": round(100 * (len(v["movie"]) + len(v["episode"])) / total, 1) if total else 0} for k, v in variant.items()}
+        by_variant = {}
+        for k in ("pt-PT", "pt-BR"):
+            ids = [i for i, c in covs.items() if k in c["covered"]]
+            by_variant[k] = {
+                "total": len(ids), "pct": round(100 * len(ids) / total, 1) if total else 0,
+                "movies": sum(1 for i in ids if kinds.get(i) == "movie"), "episodes": sum(1 for i in ids if kinds.get(i) == "episode"),
+                "assumed": sum(1 for i in ids if k in covs[i].get("fallback", {})),     # incluídos por assunção (≈pt / ≈pt-BR)
+            }
         by_lang = []
         for l in s["languages"]:
             have = sum(1 for v in covs.values() if l["code"] in v["covered"])

@@ -229,7 +229,8 @@ def test_missing_filters_none_other_and_language(client):
 
 
 def test_dashboard_counts_per_portuguese_variant(client):
-    d = client.get("/api/dashboard").json()["by_variant"]
+    dash = client.get("/api/dashboard").json()
+    d = dash["by_variant"]
     assert d["pt-PT"]["total"] == 1 and d["pt-PT"]["episodes"] == 1 and d["pt-PT"]["movies"] == 0
     assert d["pt-BR"]["total"] == 0 and d["pt-PT"]["pct"] == 33.3
 
@@ -238,3 +239,13 @@ def test_dashboard_variant_card_separates_assumed(client):
     client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}], "accept_pt_br_fallback": True})
     d = client.get("/api/dashboard").json()
     assert d["by_variant"]["pt-PT"]["total"] == 1 and d["by_variant"]["pt-PT"]["assumed"] == 0
+
+
+def test_dashboard_card_always_equals_coverage_bar(client):
+    client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}],
+                                       "accept_pt_br_fallback": True, "generic_pt_variant": "pt-PT"})
+    d = client.get("/api/dashboard").json()
+    bars = {x["code"]: x["have"] for x in d["coverage_by_language"]}
+    for k in ("pt-PT", "pt-BR"):
+        assert d["by_variant"][k]["total"] == bars[k]
+        assert d["by_variant"][k]["movies"] + d["by_variant"][k]["episodes"] == bars[k]
