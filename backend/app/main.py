@@ -261,6 +261,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         d = {k: m[k] for k in ("id", "kind", "title", "year", "series_title", "season", "episode", "episode_title",
                                "file_name", "path", "duration", "width", "height", "video_codec", "fps", "plex_key",
                                "library_id", "imdb_id", "tmdb_id", "radarr_id", "radarr_title") if k in m}
+        d["file_title"] = m.get("title")                       # título deduzido do nome do ficheiro
+        d["title"] = (m.get("radarr_title") or "").strip() or m.get("title")   # título principal: o do Radarr (ex.: em português), se existir
         d["has_poster"] = bool(m.get("poster"))
         d["covered"] = c.get("covered", {})
         d["missing"] = c.get("missing", [])
@@ -281,11 +283,11 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
             where.append("m.season=?"); args.append(season)
         if q:
             like = f"%{q.lower()}%"
-            where.append("(lower(m.title) LIKE ? OR lower(m.file_name) LIKE ? OR lower(coalesce(m.series_title,'')) LIKE ? "
+            where.append("(lower(m.title) LIKE ? OR lower(coalesce(m.radarr_title,'')) LIKE ? OR lower(m.file_name) LIKE ? OR lower(coalesce(m.series_title,'')) LIKE ? "
                          "OR CAST(m.year AS TEXT)=? OR lower(coalesce(m.episode_title,'')) LIKE ? OR "
                          "EXISTS(SELECT 1 FROM subtitles s WHERE s.media_id=m.id AND s.present=1 AND (lower(coalesce(s.lang,'')) LIKE ? OR lower(s.path) LIKE ?)))")
-            args += [like, like, like, q.strip(), like, like, like]
-        order = {"title": "lower(coalesce(m.series_title,m.title)), m.season, m.episode, lower(m.title)", "year": "m.year DESC, lower(m.title)",
+            args += [like, like, like, like, q.strip(), like, like, like]
+        order = {"title": "lower(coalesce(m.series_title, nullif(m.radarr_title,''), m.title)), m.season, m.episode, lower(coalesce(nullif(m.radarr_title,''), m.title))", "year": "m.year DESC, lower(m.title)",
                  "recent": "m.id DESC"}.get(sort, "lower(m.title)")
         rows_ = core.db.query(f"SELECT m.* FROM media_items m WHERE {' AND '.join(where)} ORDER BY {order}", args)
         covs = cov.compute(core.db, core.settings)  # derivado dos dados reais

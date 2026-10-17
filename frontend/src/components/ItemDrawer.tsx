@@ -36,6 +36,7 @@ export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | 
             </div>
             <div className="min-w-0 space-y-2 text-sm">
               <div className="font-medium break-words">{d.kind === "episode" ? (d.episode_title || d.title) : d.title}</div>
+              {d.kind === "movie" && d.file_title && d.file_title !== d.title && <div className="text-xs text-dim -mt-1">Título original (ficheiro): {d.file_title}</div>}
               <div className="flex flex-wrap gap-1.5">
                 {d.video_codec && <Badge>{d.video_codec.toUpperCase()}</Badge>}
                 {d.height && <Badge>{resolution(d.height)}</Badge>}

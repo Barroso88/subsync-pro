@@ -312,3 +312,15 @@ def test_batch_with_language_only_searches_that_language(client):
     assert job["status"] == "done"
     langs = {d["lang"] for d in client.get("/api/downloads").json()["items"]}
     assert langs <= {"pt-PT"}                        # nunca procurou/preparou pt-BR
+
+
+def test_radarr_title_is_primary_title_and_searchable_and_sorts(client):
+    mv = client.get("/api/media", params={"kind": "movie"}).json()["items"][0]
+    client.core.db.execute("UPDATE media_items SET radarr_title='Os Macacos de Teste' WHERE id=?", (mv["id"],))
+    got = client.get("/api/media", params={"kind": "movie"}).json()["items"][0]
+    assert got["title"] == "Os Macacos de Teste" and got["file_title"] == "Filme Teste"
+    assert client.get("/api/media", params={"q": "macacos"}).json()["total"] == 1             # procura pelo título do Radarr
+    assert client.get("/api/media", params={"q": "filme teste"}).json()["total"] == 1         # e continua pelo do ficheiro
+    assert client.get(f"/api/media/{mv['id']}").json()["title"] == "Os Macacos de Teste"
+    # a pesquisa de legendas continua a usar o título do ficheiro/IDs
+    assert client.core.media_dict(mv["id"])["title"] == "Filme Teste"
