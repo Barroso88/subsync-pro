@@ -262,3 +262,15 @@ def test_opensubtitles_invalid_json_error_has_http_status():
     p, _ = os_provider(lambda r: httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"}))
     with pytest.raises(ProviderError, match=r"HTTP 200, text/html"):
         p.search(SearchQuery("movie", "X"))
+
+
+def test_year_not_sent_when_identifier_present_and_modes():
+    q = SearchQuery("movie", "Web Of Lies", year=2010, imdb_id="tt1493287", moviehash="ABC123", languages=["pt-PT"])
+    full = OpenSubtitles.build_params(q)
+    assert full["imdb_id"] == "1493287" and "year" not in full and full["moviehash"] == "abc123"
+    from dataclasses import replace
+    assert set(OpenSubtitles.build_params(replace(q, mode="hash"))) == {"order_by", "order_direction", "languages", "hearing_impaired", "foreign_parts_only", "moviehash"}
+    t = OpenSubtitles.build_params(replace(q, mode="title"))
+    assert t["query"] == "web of lies" and "imdb_id" not in t and "year" not in t and "moviehash" not in t
+    no_id = OpenSubtitles.build_params(SearchQuery("movie", "Some Film", year=2001))
+    assert no_id["year"] == 2001 and no_id["query"] == "some film"

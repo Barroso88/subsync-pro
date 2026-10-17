@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from dataclasses import replace
 import time
 from datetime import date
 from pathlib import Path
@@ -403,6 +404,11 @@ class App:
         s = self.settings.all()
         q = self.build_query(media, languages)
         results, errors = [], []
+        steps = [("full", "hash + identificação" if q.moviehash else "identificação")]
+        if q.moviehash and (q.imdb_id or q.tmdb_id or q.title):
+            steps.append(("hash", "só hash do ficheiro"))
+        steps.append(("title", "só título, sem ano"))
+        tried: list[str] = []
         for name, pcfg in sorted(s["providers"].items(), key=lambda kv: kv[1].get("priority", 99)):
             if not pcfg.get("enabled") or name not in PROVIDERS:
                 continue
@@ -411,14 +417,24 @@ class App:
                 errors.append({"provider": name, "message": "Fornecedor sem credenciais configuradas.", "auth": True})
                 continue
             try:
-                for r in p.search(q):
-                    ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
-                    results.append({"result": r.to_dict(), "evaluation": ev.to_dict()})
+                for mode, label in steps:
+                    if mode == "hash" and not p.supports_hash:
+                        continue
+                    qm = replace(q, mode=mode)
+                    found = p.search(qm)
+                    tried.append(f"{name}: {label} → {len(found)}")
+                    if not found:
+                        continue
+                    for r in found:
+                        r.found_by = label
+                        ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
+                        results.append({"result": r.to_dict(), "evaluation": ev.to_dict()})
+                    break
             except ProviderError as e:
                 errors.append({"provider": name, "message": str(e), "auth": e.auth, "rate_limited": e.rate_limited,
                                "retry_after": e.retry_after})
         results.sort(key=lambda x: (-x["evaluation"]["score"], -(x["result"]["download_count"] or 0)))
-        return {"media_id": media_id, "query": {"languages": q.languages, "hash_used": bool(q.moviehash)},
+        return {"media_id": media_id, "query": {"languages": q.languages, "hash_used": bool(q.moviehash), "tried": tried},
                 "results": results, "errors": errors}
 
     # ---- download: preparar / instalar ------------------------------------

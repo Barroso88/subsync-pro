@@ -106,31 +106,36 @@ class OpenSubtitles(Provider):
         p: dict[str, Any] = {"order_by": "download_count", "order_direction": "desc"}
         if q.languages:
             p["languages"] = ",".join(sorted({l.lower() for l in q.languages}))
-        if q.moviehash:
-            p["moviehash"] = q.moviehash
         p["hearing_impaired"] = q.hi_policy
         p["foreign_parts_only"] = q.forced_policy
+        if q.moviehash and q.mode in ("full", "hash"):
+            p["moviehash"] = q.moviehash
+        if q.mode == "hash":
+            return {k: (v.lower() if isinstance(v, str) else v) for k, v in sorted(p.items())}
+        use_ids = q.mode == "full"
+        has_id = False
         if q.kind == "episode":
             p["type"] = "episode"
             if q.season is not None:
                 p["season_number"] = q.season
             if q.episode is not None:
                 p["episode_number"] = q.episode
-            if q.tmdb_id:
-                p["parent_tmdb_id"] = q.tmdb_id
-            elif q.imdb_id:
-                p["parent_imdb_id"] = q.imdb_id.lstrip("t")
+            if use_ids and q.tmdb_id:
+                p["parent_tmdb_id"], has_id = q.tmdb_id, True
+            elif use_ids and q.imdb_id:
+                p["parent_imdb_id"], has_id = q.imdb_id.lstrip("t"), True
             else:
                 p["query"] = q.series_title or q.title
         else:
             p["type"] = "movie"
-            if q.imdb_id:
-                p["imdb_id"] = q.imdb_id.lstrip("t")
-            elif q.tmdb_id:
-                p["tmdb_id"] = q.tmdb_id
+            if use_ids and q.imdb_id:
+                p["imdb_id"], has_id = q.imdb_id.lstrip("t"), True
+            elif use_ids and q.tmdb_id:
+                p["tmdb_id"], has_id = q.tmdb_id, True
             else:
                 p["query"] = q.title
-            if q.year:
+            # o ano só entra quando NÃO há identificador (um ano ligeiramente diferente esvaziaria a pesquisa)
+            if q.year and not has_id and q.mode == "full":
                 p["year"] = q.year
         return {k: (v.lower() if isinstance(v, str) else v) for k, v in sorted(p.items())}
 

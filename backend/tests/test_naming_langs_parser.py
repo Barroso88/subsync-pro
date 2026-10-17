@@ -95,3 +95,18 @@ def test_alignment_detects_offset_and_same_timing():
     shifted = parse_srt(make_srt(120, 30_000, lang="en", offset_ms=7000))
     r2 = align_with_reference(shifted.cues, ref.cues)
     assert abs(abs(r2.offset_ms) - 7000) <= 500 and r2.match_ratio > 0.9
+
+
+def test_titles_starting_with_tech_words_are_not_erased():
+    r = Path("/media/filmes")
+    for fname, title, year in [("Web.Of.Lies.2009.1080p.WEBRip.x264.AAC5.1-[YTS.MX].mp4", "Web Of Lies", 2009),
+                                ("HDTV.Stories.2015.720p.mkv", "HDTV Stories", 2015),
+                                ("Spider.Web.2002.1080p.BluRay.mp4", "Spider Web", 2002)]:
+        mid = identify(r / "X (2009) [1080p] [YTS.MX]" / fname, r, "movies")
+        assert mid.title == title, (fname, mid)
+
+
+def test_title_without_year_keeps_leading_tech_word():
+    r = Path("/media/filmes")
+    assert identify(r / "Web.Of.Lies.1080p.WEBRip.x264.mp4", r, "movies").title == "Web Of Lies"
+    assert identify(r / "Some.Movie.1080p.WEBRip.x264.mp4", r, "movies").title == "Some Movie"

@@ -266,3 +266,25 @@ def test_index_html_is_never_cached(cfg, fake_probe, tmp_path):
     with TestClient(create_app(cfg)) as c:
         r = c.get("/filmes")
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+
+
+def test_search_falls_back_through_strategies(client):
+    seen = []
+    orig = client.core.transport
+
+    def h(req: httpx.Request):
+        if req.url.path.endswith("/subtitles"):
+            p = dict(req.url.params)
+            seen.append(p)
+            if "query" not in p:          # 1.º pedido (ids/hash): vazio; o de título devolve resultados
+                return httpx.Response(200, json={"data": []})
+            return httpx.Response(200, json={"data": [{"id": "1", "attributes": {"language": "pt-PT", "release": "x", "files": [{"file_id": 9, "file_name": "x.srt"}], "feature_details": {}}}]})
+        return orig.handle_request(req) if hasattr(orig, "handle_request") else httpx.Response(404)
+
+    client.core.transport = httpx.MockTransport(h)
+    client.core._providers.clear()
+    mv = client.get("/api/media", params={"kind": "movie"}).json()["items"][0]
+    client.core.db.execute("UPDATE media_items SET imdb_id='tt1', year=1999 WHERE id=?", (mv["id"],))
+    r = client.post(f"/api/media/{mv['id']}/search", json={}).json()
+    assert r["results"] and r["results"][0]["result"]["found_by"] == "só título, sem ano"
+    assert len(r["query"]["tried"]) >= 2 and "year" not in seen[0]

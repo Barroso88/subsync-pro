@@ -11,7 +11,7 @@ import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "
 interface Detail extends Item {
   dir: string; size: number; subtitles: Sub[]; downloads: Download[]; moviehash: string | null; library_writable: boolean; probe_status: string;
 }
-interface SearchRes { results: Candidate[]; errors: { provider: string; message: string; auth?: boolean; rate_limited?: boolean; retry_after?: number }[]; query: { languages: string[]; hash_used: boolean } }
+interface SearchRes { results: Candidate[]; errors: { provider: string; message: string; auth?: boolean; rate_limited?: boolean; retry_after?: number }[]; query: { languages: string[]; hash_used: boolean; tried?: string[] } }
 
 export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | null; onClose: () => void; initialTab?: "subs" | "search" }) {
   const [tab, setTab] = useState<"subs" | "search">(initialTab);
@@ -163,7 +163,12 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
         <div key={i} className="card border-warn/30 p-3 text-sm flex gap-2.5"><AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" /><div><b className="font-medium">{e.provider}</b>: {e.message}{e.auth && <span className="text-mute"> — configure em Fornecedores.</span>}{e.retry_after ? ` Tente novamente em ${e.retry_after}s.` : ""}</div></div>
       ))}
       {search.isPending && <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-24" />)}</div>}
-      {res && !search.isPending && res.results.length === 0 && !res.errors.length && <Empty icon={<Search size={20} />} title="Sem resultados" hint="O fornecedor não devolveu legendas para os idiomas escolhidos." />}
+      {res && !search.isPending && res.results.length === 0 && !res.errors.length && (
+        <>
+          <Empty icon={<Search size={20} />} title="Sem resultados" hint="O fornecedor não devolveu legendas para os idiomas escolhidos, mesmo após as pesquisas alargadas." />
+          {!!res.query.tried?.length && <div className="text-xs text-dim -mt-6 text-center">Tentado: {res.query.tried.join(" · ")}</div>}
+        </>
+      )}
       {res && canTranslate && res.results.length > 0 && !res.results.some((c) => c.result.language === target) && (
         <div className="card border-info/30 bg-info/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-info shrink-0 mt-0.5" /><div>Sem resultados em <b>{target}</b>. Pode traduzir uma legenda de outro idioma (botão «Traduzir» no resultado).</div></div>
       )}
@@ -203,6 +208,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
             {r.hearing_impaired && <Badge>SDH/HI</Badge>}{r.forced && <Badge tone="warn">Forçada</Badge>}
             {(r.ai_translated || r.machine_translated) && <Badge tone="warn">Tradução automática</Badge>}
             {r.from_trusted && <Badge tone="ok">Confiável</Badge>}
+            {r.found_by && r.found_by !== "hash + identificação" && <Badge tone="warn" title="Pesquisa alargada: o primeiro pedido não devolveu nada">pesquisa: {r.found_by}</Badge>}
           </div>
         </div>
         <ScoreBar score={ev.score} />

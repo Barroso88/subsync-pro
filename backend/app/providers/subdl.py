@@ -63,10 +63,11 @@ class SubDL(Provider):
                              "subs_per_page": min(30, q.max_results)}
         if q.languages:
             p["languages"] = ",".join(dict.fromkeys(to_subdl_lang(l) for l in q.languages))
-        if q.imdb_id:
-            p["imdb_id"] = q.imdb_id if q.imdb_id.startswith("tt") else f"tt{q.imdb_id}"
-        elif q.tmdb_id:
-            p["tmdb_id"] = q.tmdb_id
+        has_id = False
+        if q.mode == "full" and q.imdb_id:
+            p["imdb_id"], has_id = (q.imdb_id if q.imdb_id.startswith("tt") else f"tt{q.imdb_id}"), True
+        elif q.mode == "full" and q.tmdb_id:
+            p["tmdb_id"], has_id = q.tmdb_id, True
         else:
             p["film_name"] = (q.series_title or q.title) if q.kind == "episode" else q.title
         if q.kind == "episode":
@@ -74,7 +75,7 @@ class SubDL(Provider):
                 p["season_number"] = q.season
             if q.episode is not None:
                 p["episode_number"] = q.episode
-        elif q.year:
+        elif q.year and not has_id and q.mode == "full":
             p["year"] = q.year
         return p
 

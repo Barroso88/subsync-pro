@@ -155,6 +155,9 @@ class Scanner:
             unchanged = old and old["size"] == st.st_size and abs(old["mtime"] - st.st_mtime) < 1 and old["present"] and not force
             if unchanged:
                 stats["unchanged"] += 1
+                if old["title"] != mid.title:     # corrige títulos de versões anteriores (o ano do Radarr não é tocado)
+                    self.db.execute("UPDATE media_items SET title=?, series_title=?, episode_title=COALESCE(episode_title,?) WHERE id=?",
+                                    (mid.title, mid.series_title, mid.episode_title, old["id"]))
                 media_by_path[sp] = old["id"]
                 # reprocessar se o ffprobe nunca correu e agora está disponível
                 if old["probe_status"] == "pending" and self.ffprobe_ok:

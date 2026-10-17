@@ -35,6 +35,7 @@ class SearchQuery:
     hi_policy: str = "exclude"      # include | exclude | only
     forced_policy: str = "exclude"  # include | exclude | only
     max_results: int = 30
+    mode: str = "full"              # full | hash (só hash) | title (só título, sem ano nem ids)
 
 
 @dataclass
@@ -63,6 +64,7 @@ class SubtitleResult:
     tmdb_id: int | None = None
     page_url: str | None = None
     format: str | None = None
+    found_by: str | None = None      # estratégia de pesquisa que o encontrou
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()

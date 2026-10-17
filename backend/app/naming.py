@@ -16,7 +16,7 @@ _NXNN = re.compile(r"(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)")
 _SEASON_DIR = re.compile(r"^(?:season|temporada|série|serie|s)[ ._-]*(\d{1,3})$", re.I)
 _YEAR = re.compile(r"[\(\[\.\s_-]((?:19|20)\d{2})[\)\]\.\s_-]|[\(\[]((?:19|20)\d{2})[\)\]]|[\.\s_-]((?:19|20)\d{2})$")
 _NOISE = re.compile(
-    r"\b(2160p|1080p|1080i|720p|480p|4k|uhd|hdr10?\+?|hdr|dv|dolby ?vision|bluray|blu-ray|bdrip|brrip|"
+    r"(?<=[\s._-])\b(2160p|1080p|1080i|720p|480p|4k|uhd|hdr10?\+?|hdr|dv|dolby ?vision|bluray|blu-ray|bdrip|brrip|"
     r"web-?dl|webrip|web|hdtv|dvdrip|remux|x264|x265|h\.?264|h\.?265|hevc|avc|aac|ac3|dts(?:-hd)?|truehd|atmos|"
     r"ddp?5\.1|ddp?7\.1|10bit|proper|repack|extended|unrated|remastered|multi|dual|internal)\b.*$",
     re.I,
@@ -35,8 +35,9 @@ class MediaId:
     episode_title: str | None = None
 
 
-def clean_title(s: str) -> str:
-    s = _NOISE.sub("", s)
+def clean_title(s: str, strip_noise: bool = True) -> str:
+    if strip_noise:
+        s = _NOISE.sub("", s)
     s = re.sub(r"[\._]+", " ", s)
     s = re.sub(r"\s+-\s*$", "", s)
     s = re.sub(r"\s+", " ", s).strip(" -._[]()")
@@ -102,7 +103,8 @@ def identify(path: Path, library_root: Path, library_type: str) -> MediaId:
         if y2:
             year = y2
             base = rel_parts[-1]
-    title = clean_title(re.sub(r"[\(\[\.\s_-]*(?:19|20)\d{2}.*$", "", base)) if year else clean_title(base)
+    # com ano: o título é o que vem antes dele (não se aplicam cortes de «web», «hdtv»... para não destruir títulos como «Web of Lies»)
+    title = clean_title(re.sub(r"[\(\[\.\s_-]*(?:19|20)\d{2}.*$", "", base), strip_noise=False) if year else clean_title(base)
     return MediaId("movie", title or clean_title(stem), year)
 
 
