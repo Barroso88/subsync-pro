@@ -52,6 +52,28 @@ def _norm_src(s: str) -> str:
     return {"bdrip": "bluray", "brrip": "bluray", "webdl": "web", "webrip": "web", "amzn": "web", "nf": "web", "dsnp": "web"}.get(s, s)
 
 
+_YEAR_TOK = re.compile(r"^(?:19|20)\d{2}$")
+
+
+def _title_tokens(s: str) -> set[str]:
+    """Termos do título sem anos soltos: o OpenSubtitles devolve por vezes «2026 - Lockbox»."""
+    t = _tokens(s)
+    nt = {x for x in t if not _YEAR_TOK.match(x)}
+    return nt or t
+
+
+def _title_similarity(feature_title: str, titles: list[str | None]) -> float:
+    a = _title_tokens(feature_title)
+    best = 0.0
+    for t in titles:
+        if not t or not a:
+            continue
+        b = _title_tokens(t)
+        if b:
+            best = max(best, len(a & b) / len(a | b))
+    return best
+
+
 def release_group(name: str) -> str | None:
     m = _GROUP.search(name.strip())
     return m.group(1).lower() if m else None
@@ -114,15 +136,21 @@ def evaluate_metadata(media: dict, r: SubtitleResult, *, hi_policy: str = "exclu
         else:
             add("Fornecedor não indicou temporada/episódio", 0, "info")
     else:
+        id_match = False
         if media.get("imdb_id") and r.imdb_id and str(r.imdb_id).lstrip("t0") == str(media["imdb_id"]).lstrip("t0"):
             add("IMDb coincide", 15)
+            id_match = True
         elif media.get("tmdb_id") and r.tmdb_id and r.tmdb_id == media["tmdb_id"]:
             add("TMDb coincide", 15)
+            id_match = True
         if r.feature_title and media.get("title"):
-            a, b = _tokens(r.feature_title), _tokens(media["title"])
-            if a and b and len(a & b) / len(a | b) >= 0.6:
+            # o título do ficheiro e o do Radarr (muitas vezes noutra língua) são ambos válidos
+            sim = _title_similarity(r.feature_title, [media.get("title"), media.get("radarr_title")])
+            if sim >= 0.6:
                 add("Título coincide", 8)
-            elif a and b:
+            elif id_match:
+                add("Título escrito de outra forma (o IMDb/TMDb coincide)", 0, "info")   # os identificadores pesam mais do que o texto
+            elif _title_tokens(r.feature_title) and _title_tokens(media["title"]):
                 add("Título parece diferente", -25)
                 incompatible = True
     if media.get("year") and r.feature_year:

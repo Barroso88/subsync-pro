@@ -281,3 +281,21 @@ def test_radarr_id_and_title_are_exposed():
         return httpx.Response(200, json=[{"id": 7111, "title": "Clean Hands", "year": 2024, "imdbId": "tt1", "tmdbId": 5, "movieFile": {"path": "/movies/a/a.mkv"}}])
     m = Arr("radarr", "http://r", "K", [], httpx.MockTransport(h), validate=False).movies()
     assert m[0]["id"] == 7111 and m[0]["title"] == "Clean Hands"
+
+
+def test_title_with_year_prefix_and_translated_radarr_title_is_not_incompatible():
+    from app.evaluator import evaluate_metadata
+    from app.providers.base import SubtitleResult
+    media = {"kind": "movie", "title": "Lockbox", "radarr_title": "A Caixa do Demônio", "year": 2026, "imdb_id": "tt37369064", "tmdb_id": 1500890,
+             "file_name": "Lockbox.2026.1080p.AMZN.WEB-DL.DD_5.1.H.264-playWEB.mkv", "fps": 23.976}
+    r = SubtitleResult(provider="opensubtitles", file_id="1", language="en", release="Lockbox 2026 1080p AMZN WEB-DL DD 5 1 H 264-playWEB",
+                       file_name="x", feature_title="2026 - Lockbox", feature_year=2026, imdb_id="37369064", fps=23.976)
+    ev = evaluate_metadata(media, r)
+    assert ev.compat == "probable" and ev.score >= 60 and any(f.label == "Título coincide" for f in ev.factors)
+    # título realmente diferente e sem identificadores: continua incompatível
+    media2 = {**media, "imdb_id": None, "tmdb_id": None, "radarr_title": None}
+    r2 = SubtitleResult(provider="opensubtitles", file_id="2", language="en", release="Outro Filme 2026", file_name="x", feature_title="2026 - Another Movie", feature_year=2026)
+    assert evaluate_metadata(media2, r2).compat == "incompatible"
+    # título só noutra língua mas IMDb coincide: não é «incompatível»
+    r3 = SubtitleResult(provider="opensubtitles", file_id="3", language="en", release="x", file_name="x", feature_title="The Locked Box", feature_year=2026, imdb_id="tt37369064")
+    assert evaluate_metadata({**media, "radarr_title": None}, r3).compat != "incompatible"
