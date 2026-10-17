@@ -226,3 +226,9 @@ def test_missing_filters_none_other_and_language(client):
     assert len(g(status="missing", lang="pt-PT")) == 3
     assert g(status="none", lang="pt-BR") == ["Minha Série - S01E03.mkv"]
     assert g(status="other", lang="pt-BR") == ["Filme Teste (2024).mkv", "Minha Série - S01E01.mkv", "Minha Série - S01E02.mkv"]
+
+
+def test_dashboard_counts_per_portuguese_variant(client):
+    d = client.get("/api/dashboard").json()["by_variant"]
+    assert d["pt-PT"]["total"] == 1 and d["pt-PT"]["episodes"] == 1 and d["pt-PT"]["movies"] == 0
+    assert d["pt-BR"]["total"] == 0 and d["pt-PT"]["pct"] == 33.3

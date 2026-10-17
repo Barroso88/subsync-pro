@@ -8,6 +8,7 @@ import { Badge, Empty, ErrorBox, PageHeader, Skeleton } from "../components/ui";
 import { useStartJob } from "../hooks";
 
 interface D {
+  by_variant: Record<string, { movies: number; episodes: number; total: number; pct: number }>;
   totals: Record<string, number>; coverage_by_language: { code: string; name: string; priority: string; have: number; total: number; pct: number }[];
   downloads_per_day: { day: string; n: number }[]; recent: { id: number; ts: string; level: string; kind: string; message: string }[]; last_scan_at: string | null;
 }
@@ -38,13 +39,15 @@ export default function Dashboard() {
     <>
       <PageHeader title="Dashboard" subtitle={`Última análise: ${fmtDate(d.last_scan_at)}`}
         actions={<button className="btn-ghost" disabled={scan.isPending} onClick={() => scan.mutate({ url: "/scan", body: {} })}>{scan.isPending ? <Loader2 size={15} className="animate-spin" /> : <ScanSearch size={15} />}Analisar bibliotecas</button>} />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <Stat icon={Clapperboard} label="Filmes" value={t.movies} to="/filmes" />
         <Stat icon={Tv} label="Séries" value={t.series} to="/series" />
         <Stat icon={ListVideo} label="Episódios" value={t.episodes} to="/episodios" />
         <Stat icon={FileVideo} label="Ficheiros analisados" value={t.files} />
         <Stat icon={Subtitles} label="Com legendas" value={t.with_subtitles} tone="text-ok" hint="Qualquer idioma, externa ou embutida" />
-        <Stat icon={Languages} label="Sem legenda no idioma preferido" value={t.missing_preferred} tone="text-bad" to="/em-falta" />
+        <Stat icon={Languages} label="Com legenda pt-PT" value={d.by_variant["pt-PT"].total} tone="text-ok" hint={`${d.by_variant["pt-PT"].pct}% · ${d.by_variant["pt-PT"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-PT"].episodes.toLocaleString("pt-PT")} episódios`} />
+        <Stat icon={Languages} label="Com legenda pt-BR" value={d.by_variant["pt-BR"].total} tone="text-info" hint={`${d.by_variant["pt-BR"].pct}% · ${d.by_variant["pt-BR"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-BR"].episodes.toLocaleString("pt-PT")} episódios`} />
+        <Stat icon={AlertTriangle} label="Sem legenda no idioma preferido" value={t.missing_preferred} tone="text-bad" to="/em-falta" />
         <Stat icon={AlertTriangle} label="Possível dessincronização" value={t.suspect} tone="text-warn" hint={`${t.unverified} por verificar`} to="/episodios" />
         <Stat icon={Download} label="Downloads efetuados" value={t.downloads} tone="text-accent" to="/downloads" />
       </div>

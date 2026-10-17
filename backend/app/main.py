@@ -536,6 +536,15 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         missing_pref = sum(1 for v in covs.values() if v["missing"])
         suspect = sum(1 for v in covs.values() if v["suspect"])
         unverified = sum(1 for v in covs.values() if v["unverified"])
+        # contagem direta por variante (independente do fallback pt-BR→pt-PT)
+        kinds = {r["id"]: r["kind"] for r in db.query("SELECT id,kind FROM media_items WHERE present=1")}
+        embedded_ok = bool(s["embedded_counts"])
+        variant: dict[str, dict[str, set]] = {"pt-PT": {"movie": set(), "episode": set()}, "pt-BR": {"movie": set(), "episode": set()}}
+        for sub in db.query("SELECT * FROM subtitles WHERE present=1 AND media_id IS NOT NULL AND lang IN ('pt-PT','pt-BR')"):
+            if sub["media_id"] in kinds and cov.usable(dict(sub), embedded_ok):
+                variant[sub["lang"]][kinds[sub["media_id"]]].add(sub["media_id"])
+        by_variant = {k: {"movies": len(v["movie"]), "episodes": len(v["episode"]), "total": len(v["movie"]) + len(v["episode"]),
+                          "pct": round(100 * (len(v["movie"]) + len(v["episode"])) / total, 1) if total else 0} for k, v in variant.items()}
         by_lang = []
         for l in s["languages"]:
             have = sum(1 for v in covs.values() if l["code"] in v["covered"])
@@ -550,7 +559,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                        "suspect": suspect, "unverified": unverified,
                        "downloads": db.scalar("SELECT COUNT(*) FROM downloads WHERE status='installed'"),
                        "libraries": db.scalar("SELECT COUNT(*) FROM libraries")},
-            "coverage_by_language": by_lang, "downloads_per_day": per_day, "recent": recent,
+            "coverage_by_language": by_lang, "by_variant": by_variant, "downloads_per_day": per_day, "recent": recent,
             "last_scan_at": db.scalar("SELECT MAX(last_scan_at) FROM libraries", default=None),
         }
 
