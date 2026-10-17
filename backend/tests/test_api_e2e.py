@@ -232,3 +232,9 @@ def test_dashboard_counts_per_portuguese_variant(client):
     d = client.get("/api/dashboard").json()["by_variant"]
     assert d["pt-PT"]["total"] == 1 and d["pt-PT"]["episodes"] == 1 and d["pt-PT"]["movies"] == 0
     assert d["pt-BR"]["total"] == 0 and d["pt-PT"]["pct"] == 33.3
+
+
+def test_dashboard_variant_card_separates_assumed(client):
+    client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}], "accept_pt_br_fallback": True})
+    d = client.get("/api/dashboard").json()
+    assert d["by_variant"]["pt-PT"]["total"] == 1 and d["by_variant"]["pt-PT"]["assumed"] == 0

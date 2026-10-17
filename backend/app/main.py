@@ -549,7 +549,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         for sub in db.query("SELECT * FROM subtitles WHERE present=1 AND media_id IS NOT NULL AND lang IN ('pt-PT','pt-BR')"):
             if sub["media_id"] in kinds and cov.usable(dict(sub), embedded_ok):
                 variant[sub["lang"]][kinds[sub["media_id"]]].add(sub["media_id"])
-        by_variant = {k: {"movies": len(v["movie"]), "episodes": len(v["episode"]), "total": len(v["movie"]) + len(v["episode"]),
+        assumed = {k: sum(1 for c in covs.values() if k in c.get("fallback", {})) for k in variant}   # cobertos por assunção (≈pt / ≈pt-BR)
+        by_variant = {k: {"assumed": assumed[k], "movies": len(v["movie"]), "episodes": len(v["episode"]), "total": len(v["movie"]) + len(v["episode"]),
                           "pct": round(100 * (len(v["movie"]) + len(v["episode"])) / total, 1) if total else 0} for k, v in variant.items()}
         by_lang = []
         for l in s["languages"]:

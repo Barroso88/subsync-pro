@@ -8,7 +8,7 @@ import { Badge, Empty, ErrorBox, PageHeader, Skeleton } from "../components/ui";
 import { useStartJob } from "../hooks";
 
 interface D {
-  by_variant: Record<string, { movies: number; episodes: number; total: number; pct: number }>;
+  by_variant: Record<string, { assumed: number; movies: number; episodes: number; total: number; pct: number }>;
   totals: Record<string, number>; coverage_by_language: { code: string; name: string; priority: string; have: number; total: number; pct: number }[];
   downloads_per_day: { day: string; n: number }[]; recent: { id: number; ts: string; level: string; kind: string; message: string }[]; last_scan_at: string | null;
 }
@@ -45,15 +45,15 @@ export default function Dashboard() {
         <Stat icon={ListVideo} label="Episódios" value={t.episodes} to="/episodios" />
         <Stat icon={FileVideo} label="Ficheiros analisados" value={t.files} />
         <Stat icon={Subtitles} label="Com legendas" value={t.with_subtitles} tone="text-ok" hint="Qualquer idioma, externa ou embutida" />
-        <Stat icon={Languages} label="Com legenda pt-PT" value={d.by_variant["pt-PT"].total} tone="text-ok" hint={`${d.by_variant["pt-PT"].pct}% · ${d.by_variant["pt-PT"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-PT"].episodes.toLocaleString("pt-PT")} episódios`} />
-        <Stat icon={Languages} label="Com legenda pt-BR" value={d.by_variant["pt-BR"].total} tone="text-info" hint={`${d.by_variant["pt-BR"].pct}% · ${d.by_variant["pt-BR"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-BR"].episodes.toLocaleString("pt-PT")} episódios`} />
+        <Stat icon={Languages} label="Com legenda pt-PT" value={d.by_variant["pt-PT"].total} tone="text-ok" hint={`${d.by_variant["pt-PT"].pct}% identificadas · ${d.by_variant["pt-PT"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-PT"].episodes.toLocaleString("pt-PT")} episódios${d.by_variant["pt-PT"].assumed ? ` · +${d.by_variant["pt-PT"].assumed.toLocaleString("pt-PT")} cobertos por assunção (≈)` : ""}`} />
+        <Stat icon={Languages} label="Com legenda pt-BR" value={d.by_variant["pt-BR"].total} tone="text-info" hint={`${d.by_variant["pt-BR"].pct}% identificadas · ${d.by_variant["pt-BR"].movies.toLocaleString("pt-PT")} filmes · ${d.by_variant["pt-BR"].episodes.toLocaleString("pt-PT")} episódios${d.by_variant["pt-BR"].assumed ? ` · +${d.by_variant["pt-BR"].assumed.toLocaleString("pt-PT")} cobertos por assunção (≈)` : ""}`} />
         <Stat icon={AlertTriangle} label="Sem legenda no idioma preferido" value={t.missing_preferred} tone="text-bad" to="/em-falta" />
         <Stat icon={AlertTriangle} label="Possível dessincronização" value={t.suspect} tone="text-warn" hint={`${t.unverified} por verificar`} to="/episodios" />
         <Stat icon={Download} label="Downloads efetuados" value={t.downloads} tone="text-accent" to="/downloads" />
       </div>
       <div className="grid lg:grid-cols-5 gap-4 mt-4">
         <div className="card p-5 lg:col-span-3">
-          <div className="font-medium text-sm mb-1">Cobertura por idioma</div><div className="text-xs text-dim mb-4">% de ficheiros com legenda (externa ou, se ativado, embutida) em cada idioma</div>
+          <div className="font-medium text-sm mb-1">Cobertura por idioma</div><div className="text-xs text-dim mb-4">% de ficheiros com legenda (externa ou, se ativado, embutida) em cada idioma, incluindo os cobertos por assunção (≈pt, ≈pt-BR) definida nas Definições</div>
           {d.coverage_by_language.length === 0 ? <Empty title="Sem idiomas configurados" /> : (
             <div className="space-y-3">
               {d.coverage_by_language.map((l) => (
