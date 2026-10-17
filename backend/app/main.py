@@ -95,7 +95,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @app.middleware("http")
     async def auth_mw(request: Request, call_next):
         p = request.url.path
-        if expected and p.startswith("/api") and p not in ("/api/health", "/api/auth/login", "/api/auth/status"):
+        if expected and p.startswith("/api") and p not in ("/api/health", "/api/auth/login", "/api/auth/status") and not (p.startswith("/api/webhooks/") and p != "/api/webhooks/info"):
             tok = request.cookies.get(COOKIE, "")
             if not hmac.compare_digest(tok, expected):
                 return JSONResponse({"detail": "Não autenticado"}, status_code=401)
@@ -447,6 +447,44 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @api.post("/batch", status_code=202)
     def batch(b: BatchIn):
         return {"job_id": core.start_batch(b.media_ids, b.languages, b.install, b.min_tier)}
+
+    # ---- webhooks do Radarr/Sonarr (autenticados por basic auth ou X-Webhook-Token; não usam a sessão da UI) ----
+    def _webhook_auth(request: Request) -> None:
+        import base64
+        tok = core.webhook_token()
+        given = request.headers.get("x-webhook-token", "")
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("basic "):
+            try:
+                given = base64.b64decode(auth[6:]).decode("utf-8", "replace").split(":", 1)[-1]
+            except Exception:  # noqa: BLE001
+                given = ""
+        ip = request.client.host if request.client else "?"
+        limiter.check(ip)
+        if not given or not hmac.compare_digest(given, tok):
+            limiter.fail(ip)
+            raise HTTPException(401, "Token de webhook inválido")
+
+    @api.post("/webhooks/{source}", status_code=202)
+    async def webhook(source: str, request: Request):
+        if source not in ("radarr", "sonarr"):
+            raise HTTPException(404)
+        _webhook_auth(request)
+        if int(request.headers.get("content-length") or 0) > 1_000_000:
+            raise HTTPException(413, "Payload demasiado grande")
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(400, "JSON inválido")
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "JSON inválido")
+        return core.handle_webhook(source, payload)
+
+    @api.get("/webhooks/info")
+    def webhook_info(request: Request):
+        base = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+        return {"token": core.webhook_token(), "username": "subsync",
+                "urls": {"radarr": f"{base}/api/webhooks/radarr", "sonarr": f"{base}/api/webhooks/sonarr"}}
 
     # ---- fornecedores / integrações / definições -------------------------------
     @api.get("/providers")

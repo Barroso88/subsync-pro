@@ -17,7 +17,7 @@ from .db import Database, jloads, rows
 from .evaluator import Evaluation, evaluate_content, evaluate_metadata
 from .installer import (InstallConflict, InvalidDownload, build_dest_name, install, plan_install, stage, validate_download)
 from .integrations.arr import Arr
-from .integrations.common import IntegrationError
+from .integrations.common import IntegrationError, map_remote_to_local
 from .integrations.plex import Plex
 from .jobs import JobCancelled, JobContext, JobManager
 from .languages import normalize_lang
@@ -61,6 +61,7 @@ class App:
         self.jobs.register("sync_integrations", self._job_sync)
         self.jobs.register("refresh_plex", self._job_refresh_plex)
         self.jobs.register("revalidate", self._job_revalidate)
+        self.jobs.register("webhook_import", self._job_webhook_import)
 
     # ---- ciclo de vida -----------------------------------------------------
     def start(self) -> None:
@@ -730,6 +731,66 @@ class App:
         out["prepared"] += 1
         out["translated"] = out.get("translated", 0) + 1
         return True
+
+    # ---- webhooks (Radarr/Sonarr) -------------------------------------------
+    def webhook_token(self) -> str:
+        tok = self.secrets.get("webhook_token")
+        if not tok:
+            import secrets as _s
+            tok = _s.token_urlsafe(24)
+            self.secrets.set("webhook_token", tok)
+        return tok
+
+    def handle_webhook(self, source: str, payload: dict) -> dict:
+        """Radarr/Sonarr avisam que importaram um ficheiro: analisa só essa pasta e (se ativo) procura a legenda."""
+        ev = str(payload.get("eventType", ""))
+        if ev == "Test":
+            return {"ok": True, "test": True}
+        if ev not in ("Download", "MovieFileImported", "Upgrade", "EpisodeFileImported"):
+            return {"ok": True, "ignored": ev or "sem eventType"}
+        f = payload.get("movieFile") if source == "radarr" else payload.get("episodeFile")
+        remote = (f or {}).get("path")
+        if not remote:
+            rel = (f or {}).get("relativePath")
+            base = (payload.get("movie") or payload.get("series") or {}).get("folderPath") or (payload.get("movie") or {}).get("path") or (payload.get("series") or {}).get("path")
+            remote = f"{base.rstrip('/')}/{rel}" if base and rel else None
+        if not remote or not isinstance(remote, str):
+            raise ServiceError("Payload sem caminho do ficheiro.", 422)
+        mappings = (self.settings.get(source) or {}).get("path_mappings", [])
+        local = map_remote_to_local(remote, mappings)
+        meta = payload.get("movie") or payload.get("series") or {}
+        jid = self.jobs.submit("webhook_import", f"Novo ficheiro ({source.title()}): {os.path.basename(local)}",
+                               {"path": local, "source": source, "remote": remote,
+                                "imdb_id": meta.get("imdbId"), "tmdb_id": meta.get("tmdbId"), "tvdb_id": meta.get("tvdbId")}, dedupe=True)
+        return {"ok": True, "job_id": jid}
+
+    def _job_webhook_import(self, ctx: JobContext, p: dict) -> dict:
+        local = p["path"]
+        roots = [l["path"] for l in self.libraries()]
+        try:
+            real = require_within(local, roots)
+        except PathSecurityError:
+            raise ServiceError(f"O caminho «{local}» não está em nenhuma biblioteca. Verifique o mapeamento de caminhos de {p['source'].title()} (remoto → local).")
+        if not os.path.isfile(real):
+            raise ServiceError(f"Ficheiro não encontrado: {real} (mapeamento de caminhos errado?).")
+        lib = next(l for l in self.libraries() if is_within(real, l["path"]))
+        ctx.set_total(2)
+        self.scanner.scan_library(lib, ctx, os.path.dirname(real))
+        ctx.step(os.path.basename(real), message="analisado")
+        m = self.db.one("SELECT id FROM media_items WHERE path=?", (real,))
+        if not m:
+            raise ServiceError("O ficheiro não foi reconhecido como vídeo.")
+        cols = {k: p.get(k) for k in ("imdb_id", "tmdb_id", "tvdb_id") if p.get(k)}
+        if cols:
+            self.db.execute(f"UPDATE media_items SET {','.join(f'{k}=?' for k in cols)} WHERE id=?", (*cols.values(), m["id"]))
+        add_event(self.db, "webhook", f"{p['source'].title()}: novo ficheiro {os.path.basename(real)}", "info", m["id"])
+        s = self.settings.all()
+        res: dict = {"media_id": m["id"], "searched": False}
+        if s["auto_download"] and any(x.get("enabled") for x in s["providers"].values()):
+            res["batch"] = self._job_batch(ctx, {"media_ids": [m["id"]], "install": not s["require_confirmation"], "min_tier": s["auto_min_tier"], "auto": True})
+            res["searched"] = True
+        ctx.step(os.path.basename(real), message="concluído", force=True)
+        return res
 
     # ---- revalidação de legendas existentes ---------------------------------
     def _job_revalidate(self, ctx: JobContext, p: dict) -> dict:

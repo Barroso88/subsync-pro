@@ -240,6 +240,7 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
               <button className="btn-ghost !h-8" onClick={() => upd({ path_mappings: [...(cfg.path_mappings ?? []), { remote: "", local: "" }] })}><Plus size={14} />Adicionar mapeamento</button>
             </div>
           </Field>
+          {name !== "plex" && <WebhookBox name={name} />}
           <div className="flex gap-2 justify-end">
             <button className="btn-ghost" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending && <Loader2 size={14} className="animate-spin" />}Testar ligação</button>
             <button className="btn-ghost" onClick={async () => { try { if (secret.trim()) { await api.put("/secrets", { values: { [secretKey]: secret.trim() } }); setSecret(""); } await api.put("/settings", { [name]: cfg }); qc.invalidateQueries({ queryKey: ["integrations"] }); sync.mutate({ url: "/integrations/sync" }); } catch (e) { toast("bad", (e as Error).message); } }}>Sincronizar metadados</button>
@@ -247,5 +248,44 @@ function Integration({ name, d, set }: { name: "plex" | "radarr" | "sonarr"; d: 
         </div>
       )}
     </Section>
+  );
+}
+
+function CopyField({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
+  const toast = useToast();
+  const [show, setShow] = useState(!secret);
+  return (
+    <div className="space-y-1"><div className="label">{label}</div>
+      <div className="flex gap-2"><input className="input font-mono text-xs" readOnly value={show ? value : "••••••••••••••••"} onFocus={(e) => e.currentTarget.select()} />
+        {secret && <button className="btn-ghost" onClick={() => setShow(!show)}>{show ? "Ocultar" : "Mostrar"}</button>}
+        <button className="btn-ghost" onClick={() => navigator.clipboard?.writeText(value).then(() => toast("ok", "Copiado"), () => toast("warn", "Copie manualmente"))}>Copiar</button></div></div>
+  );
+}
+
+function WebhookBox({ name }: { name: "radarr" | "sonarr" }) {
+  const [open, setOpen] = useState(false);
+  const info = useQuery({ queryKey: ["webhook-info"], queryFn: () => api.get<{ token: string; username: string; urls: Record<string, string> }>("/webhooks/info"), enabled: open });
+  const label = name === "radarr" ? "Radarr" : "Sonarr";
+  return (
+    <div className="rounded-lg border border-line bg-s2/50 p-3.5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div><div className="text-sm font-medium">Webhook · procurar legenda assim que o {label} importa</div>
+          <div className="text-xs text-mute">Sem webhook, só encontra ficheiros novos na próxima análise agendada.</div></div>
+        <button className="btn-ghost" onClick={() => setOpen(!open)}>{open ? "Fechar" : "Configurar"}</button>
+      </div>
+      {open && info.data && (
+        <div className="space-y-3">
+          <ol className="text-xs text-mute list-decimal pl-4 space-y-1">
+            <li>No {label}: <b className="text-fg">Settings → Connect → + → Webhook</b>.</li>
+            <li>Ative <b className="text-fg">On Import</b> e <b className="text-fg">On Upgrade</b> (os restantes eventos podem ficar desligados). Método <b className="text-fg">POST</b>.</li>
+            <li>Preencha o URL, o utilizador e a palavra-passe abaixo e use <b className="text-fg">Test</b>: a app responde 202.</li>
+            <li>O endereço deve ser o que o {label} consegue alcançar (o IP do Unraid e a porta desta app).</li>
+            <li>Em Downloads automáticos, ative a procura automática para a app também procurar a legenda (por omissão só analisa o ficheiro).</li>
+          </ol>
+          <CopyField label="URL" value={info.data.urls[name]} />
+          <div className="grid sm:grid-cols-2 gap-3"><CopyField label="Utilizador" value={info.data.username} /><CopyField label="Palavra-passe (token)" value={info.data.token} secret /></div>
+        </div>
+      )}
+    </div>
   );
 }

@@ -85,6 +85,10 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 - Contentor: sem `privileged`, sem socket Docker, `cap_drop: ALL`, `no-new-privileges`, rootfs só de leitura, utilizador não-root.
 - **Não exponha a porta à Internet.** Sem proxy reverso com TLS, a palavra-passe viaja em claro na LAN.
 
+## Webhooks do Radarr/Sonarr (novo ficheiro → procurar legenda)
+
+No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On Import** e **On Upgrade**, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
+
 ## Leitura dos vídeos
 
 Por omissão a app só abre os vídeos com o FFprobe (metadados e lista de faixas, leitura mínima). **Nunca** lê o conteúdo completo dos vídeos, nem em «Reclassificar legendas». Só se ativar explicitamente *Definições → Scanner → Ler o texto das legendas embutidas «pt»* é que o ffmpeg extrai essas faixas (lê quase todo o ficheiro). Alternativa barata: *Definições → Idiomas → Legendas «pt» sem variante → Assumir pt-PT*.
