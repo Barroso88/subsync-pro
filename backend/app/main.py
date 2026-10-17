@@ -330,7 +330,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def poster(mid: int):
         r = core.fetch_poster(mid)
         if not r:
-            raise HTTPException(404)
+            raise HTTPException(404, core.poster_error or "Capa indisponível")
         return Response(r[0], media_type=r[1], headers={"Cache-Control": "private, max-age=86400"})
 
     @api.get("/series")

@@ -53,3 +53,25 @@ def map_local_to_remote(path: str, mappings: list[dict]) -> str:
 def client(timeout: float = 15.0, transport: httpx.BaseTransport | None = None) -> httpx.Client:
     return httpx.Client(timeout=timeout, follow_redirects=False, transport=transport,
                         headers={"User-Agent": "SubSyncPro/1.0"})
+
+
+PUBLIC_IMAGE_HOSTS = ("image.tmdb.org", "artworks.thetvdb.com", "assets.fanart.tv")
+
+
+def public_image_host_ok(url: str) -> bool:
+    u = urlparse(url)
+    return u.scheme == "https" and (u.hostname or "") in PUBLIC_IMAGE_HOSTS
+
+
+def fetch_public_image(url: str, transport: httpx.BaseTransport | None = None, max_bytes: int = 5_000_000) -> tuple[bytes, str]:
+    if not public_image_host_ok(url):
+        raise IntegrationError("Anfitrião de imagem não permitido.")
+    try:
+        with client(timeout=15, transport=transport) as c:
+            r = c.get(url)
+    except httpx.HTTPError as e:
+        raise IntegrationError(f"Sem ligação: {type(e).__name__}") from e
+    ct = r.headers.get("content-type", "")
+    if r.status_code != 200 or not ct.startswith("image/") or len(r.content) > max_bytes:
+        raise IntegrationError(f"Imagem pública indisponível (HTTP {r.status_code}).")
+    return r.content, ct

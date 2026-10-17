@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .common import IntegrationError, client, map_remote_to_local, validate_service_url
+from .common import IntegrationError, client, map_remote_to_local, public_image_host_ok, validate_service_url
 
 
 class Arr:
@@ -34,11 +34,17 @@ class Arr:
         return {"ok": True, "version": j.get("version"), "app": j.get("appName")}
 
     def _poster(self, images: list[dict]) -> str | None:
+        """`arr:<kind>:<caminho local>` e, se existir, `|<URL público TMDb/TVDB>` como alternativa."""
         for i in images or []:
             if i.get("coverType") == "poster":
-                u = i.get("url") or ""
-                if u.startswith("/"):
-                    return f"arr:{self.kind}:{u}"
+                local = i.get("url") or ""
+                remote = i.get("remoteUrl") or ""
+                parts = []
+                if local.startswith("/"):
+                    parts.append(f"arr:{self.kind}:{local}")
+                if remote.startswith("https://") and public_image_host_ok(remote):
+                    parts.append(remote.replace("/original/", "/w342/"))
+                return "|".join(parts) or None
         return None
 
     def movies(self) -> list[dict]:
@@ -69,8 +75,15 @@ class Arr:
         return out
 
     def fetch_image(self, rel: str) -> tuple[bytes, str]:
-        with client(transport=self.transport) as c:
-            r = c.get(f"{self.url}{rel}", headers={"X-Api-Key": self.key})
-        if r.status_code != 200:
-            raise IntegrationError("Imagem indisponível.")
-        return r.content, r.headers.get("content-type", "image/jpeg")
+        """Tenta com cabeçalho X-Api-Key e depois com ?apikey= (conforme a versão/autenticação do Radarr/Sonarr)."""
+        last = 0
+        for headers, params in (({"X-Api-Key": self.key}, {}), ({}, {"apikey": self.key})):
+            try:
+                with client(transport=self.transport) as c:
+                    r = c.get(f"{self.url}{rel}", headers=headers, params=params)
+            except httpx.HTTPError as e:
+                raise IntegrationError(f"Sem ligação: {type(e).__name__}") from e
+            last = r.status_code
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                return r.content, r.headers["content-type"]
+        raise IntegrationError(f"{self.kind.title()} devolveu HTTP {last} para a imagem.")

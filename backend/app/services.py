@@ -240,36 +240,51 @@ class App:
         return {"refreshed": True}
 
     def fetch_poster(self, media_id: int) -> tuple[bytes, str] | None:
+        """Devolve (bytes, content-type) ou None; o motivo da falha fica em self.poster_error."""
+        self.poster_error = ""
         m = self.db.one("SELECT poster FROM media_items WHERE id=?", (media_id,))
         if not m or not m["poster"]:
+            self.poster_error = "Sem capa associada (sincronize os metadados)."
             return None
         cache = self.cfg.poster_dir / f"{media_id}.img"
         ctype_file = cache.with_suffix(".type")
         if cache.exists():
             return cache.read_bytes(), ctype_file.read_text() if ctype_file.exists() else "image/jpeg"
-        ref: str = m["poster"]
-        try:
-            if ref.startswith("plex:"):
-                rel = ref[5:]
-                if not rel.startswith("/library/") or ".." in rel:
-                    return None
-                svc = self._integration("plex")
-                data, ctype = svc.fetch_image(rel) if svc else (None, None)
-            elif ref.startswith("arr:"):
-                _, kind, rel = ref.split(":", 2)
-                if ".." in rel or not rel.startswith("/"):
-                    return None
-                svc = self._integration(kind)
-                data, ctype = svc.fetch_image(rel) if svc else (None, None)
-            else:
-                return None
-        except IntegrationError:
-            return None
-        if not data:
-            return None
-        cache.write_bytes(data)
-        ctype_file.write_text(ctype)
-        return data, ctype
+        from .integrations.common import fetch_public_image
+        errors: list[str] = []
+        for ref in str(m["poster"]).split("|"):
+            try:
+                if ref.startswith("plex:"):
+                    rel = ref[5:]
+                    if not rel.startswith("/library/") or ".." in rel:
+                        continue
+                    svc = self._integration("plex")
+                    if not svc:
+                        errors.append("Plex desativado")
+                        continue
+                    data, ctype = svc.fetch_image(rel)
+                elif ref.startswith("arr:"):
+                    _, kind, rel = ref.split(":", 2)
+                    if ".." in rel or not rel.startswith("/"):
+                        continue
+                    svc = self._integration(kind)
+                    if not svc:
+                        errors.append(f"{kind} desativado")
+                        continue
+                    data, ctype = svc.fetch_image(rel)
+                elif ref.startswith("https://"):
+                    data, ctype = fetch_public_image(ref, self.transport)
+                else:
+                    continue
+            except IntegrationError as e:
+                errors.append(str(e))
+                continue
+            cache.write_bytes(data)
+            ctype_file.write_text(ctype)
+            return data, ctype
+        self.poster_error = "; ".join(errors) or "Capa indisponível."
+        log.warning("capa %s: %s", media_id, scrub(self.poster_error))
+        return None
 
     # ---- consultas ---------------------------------------------------------
     def media_dict(self, media_id: int) -> dict:
