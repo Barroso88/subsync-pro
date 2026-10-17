@@ -68,3 +68,15 @@ def test_plex_poster_has_priority_over_radarr_and_clears_cache(core, media_root)
     assert ref["plex_key"] == "9"
     assert ref["poster"].split("|")[0] == "plex:/library/metadata/9/thumb/1" and "image.tmdb.org" in ref["poster"]
     assert not (core.cfg.poster_dir / f"{mid}.img").exists()          # cache antiga descartada
+
+
+def test_poster_source_is_reported(core, media_root):
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    core.db.execute("UPDATE media_items SET poster='https://image.tmdb.org/t/p/w342/x.jpg' WHERE id=?", (mid,))
+    core.transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"IMG", headers={"content-type": "image/jpeg"}))
+    core.fetch_poster(mid)
+    assert core.poster_source == "tmdb/público"
+    core.fetch_poster(mid)                       # agora vem da cache, mas a origem mantém-se
+    assert core.poster_source == "tmdb/público"

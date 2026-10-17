@@ -202,7 +202,7 @@ class App:
                 final = "|".join(([plex_ref] if plex_ref else []) + [r for r in new.split("|") if r])
             if final != old:
                 self.db.execute("UPDATE media_items SET poster=? WHERE id=?", (final, mid))
-                for suffix in (".img", ".type"):
+                for suffix in (".img", ".type", ".src"):
                     try:
                         (self.cfg.poster_dir / f"{mid}{suffix}").unlink()
                     except OSError:
@@ -266,13 +266,16 @@ class App:
     def fetch_poster(self, media_id: int) -> tuple[bytes, str] | None:
         """Devolve (bytes, content-type) ou None; o motivo da falha fica em self.poster_error."""
         self.poster_error = ""
+        self.poster_source = ""
         m = self.db.one("SELECT poster FROM media_items WHERE id=?", (media_id,))
         if not m or not m["poster"]:
             self.poster_error = "Sem capa associada (sincronize os metadados)."
             return None
         cache = self.cfg.poster_dir / f"{media_id}.img"
         ctype_file = cache.with_suffix(".type")
+        src_file = cache.with_suffix(".src")
         if cache.exists():
+            self.poster_source = src_file.read_text() if src_file.exists() else "desconhecida"
             return cache.read_bytes(), ctype_file.read_text() if ctype_file.exists() else "image/jpeg"
         from .integrations.common import fetch_public_image
         errors: list[str] = []
@@ -303,8 +306,10 @@ class App:
             except IntegrationError as e:
                 errors.append(str(e))
                 continue
+            self.poster_source = "plex" if ref.startswith("plex:") else "arr" if ref.startswith("arr:") else "tmdb/público"
             cache.write_bytes(data)
             ctype_file.write_text(ctype)
+            src_file.write_text(self.poster_source)
             return data, ctype
         self.poster_error = "; ".join(errors) or "Capa indisponível."
         log.warning("capa %s: %s", media_id, scrub(self.poster_error))
