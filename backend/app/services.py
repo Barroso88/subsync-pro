@@ -964,7 +964,40 @@ class App:
             raise ServiceError(str(e), e.status)
         return sub, real, data, text, enc, parsed, fn, info
 
+    def _text_plan(self, sid: int, params: dict):
+        sub = self._sub(sid)
+        real, data = self._read_editable(sub)
+        text, enc = decode_bytes(data)
+        orig = parse_srt(text)
+        if not orig.cues:
+            raise ServiceError("Legenda sem eventos legíveis.", 422)
+        try:
+            new_text, stats, changes = st.transform_srt_text(text, params, sub.get("lang"))
+        except st.ToolError as e:
+            raise ServiceError(str(e), e.status)
+        if stats["changed"] == 0:
+            raise ServiceError("Nada a alterar com estas opções: o texto já está limpo.", 422)
+        # verificação: tempos e ordem iguais aos originais (menos as falas removidas)
+        new = parse_srt(new_text)
+        dropped = set(stats["dropped_positions"])
+        expected = [(c.start_ms, c.end_ms) for i, c in enumerate(orig.cues, 1) if i not in dropped]
+        if [(c.start_ms, c.end_ms) for c in new.cues] != expected:
+            raise ServiceError("Verificação falhou: os tempos mudariam. Nada foi alterado.", 500)
+        return sub, real, data, enc, new_text, stats, changes
+
+    def _text_preview(self, sid: int, params: dict) -> dict:
+        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params)
+        parts = [f"{stats['style']} com tags de estilo" if stats["style"] else "", f"{stats['hi']} com marcas HI" if stats["hi"] else "",
+                 f"{stats['common']} com correções comuns" if stats["common"] else "", f"{stats['uppercase']} em maiúsculas" if stats["uppercase"] else "",
+                 f"{stats['watermark']} anúncios/marcas de água" if stats["watermark"] else ""]
+        return {"kind": "text", "summary": f"{stats['changed']} de {stats['cues']} falas serão alteradas ({', '.join(p for p in parts if p)}).",
+                "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": {k: v for k, v in stats.items() if k != "dropped_positions"},
+                "changes": changes, "warnings": ([f"{stats['dropped']} falas ficam vazias e serão removidas."] if stats["dropped"] else []) +
+                (["«Maiúsculas→frase» perde a capitalização de nomes próprios (reveja a pré-visualização)."] if stats["uppercase"] else [])}
+
     def sub_preview(self, sid: int, action: str, params: dict) -> dict:
+        if action == "textfix":
+            return self._text_preview(sid, params)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
         pv = st.build_preview(parsed.cues, fn, sub.get("media_duration"))
         pv.update({"summary": info["summary"], "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc,
@@ -990,7 +1023,23 @@ class App:
             except Exception as e:  # noqa: BLE001
                 log.warning("reanálise após edição: %s", scrub(str(e)))
 
+    def _text_apply(self, sid: int, params: dict, base_hash: str) -> dict:
+        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params)
+        if st.sha1(data) != base_hash:
+            raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)
+        backup = self._backup(real, sid)
+        try:
+            st.atomic_replace(real, st.encode_like(new_text, data, enc))
+        except OSError as e:
+            raise ServiceError(f"Não foi possível escrever: {e.strerror}", 403)
+        eid = self._record_edit(sub, "textfix", params, backup, st.sha1(data), st.sha1(Path(real).read_bytes()))
+        add_event(self.db, "edit", f"Texto da legenda limpo ({stats['changed']} falas): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
+        self._rescan_dir(sub)
+        return {"edit_id": eid, "changed": stats["changed"], "dropped": stats["dropped"]}
+
     def sub_apply(self, sid: int, action: str, params: dict, base_hash: str) -> dict:
+        if action == "textfix":
+            return self._text_apply(sid, params, base_hash)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
         if st.sha1(data) != base_hash:
             raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)

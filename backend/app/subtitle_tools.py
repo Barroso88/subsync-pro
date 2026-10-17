@@ -247,3 +247,148 @@ def build_preview(orig_cues: list[Cue], fn: Callable[[int], int], video_duration
     return {"head": head, "tail": tail, "total": len(rows), "dropped": neg, "clamped": clamp, "warnings": warn,
             "first_start_before": rows[0]["old_start"] if rows else None, "first_start_after": rows[0]["new_start"] if rows else None,
             "last_end_before": max((r["old_end"] for r in rows), default=0), "last_end_after": new_last, "duration_check": after}
+
+
+# =====================================================================================
+# Fase 2 — limpeza de TEXTO (tempos e numeração intactos; só mudam as falas indicadas)
+# =====================================================================================
+
+STYLE_RE = re.compile(r"</?(?:i|b|u|s|em|strong|font|c|v|ruby|rt|span|lang)\b[^>]*>|\{\\[^}]*\}", re.I)
+_BRACKETS = re.compile(r"\[[^\]\n]{0,80}\]")
+_PAREN_START = re.compile(r"^\s*\([^)\n]{1,60}\)\s*")
+_PAREN_END = re.compile(r"\s*\([^)\n]{1,60}\)\s*$")
+_SPEAKER = re.compile(r"^[A-ZÀ-ÝÇ][A-ZÀ-ÝÇ0-9 .'’\-]{1,28}:\s+")           # «JOÃO: » só em maiúsculas
+_MUSIC_ONLY = re.compile(r"^[\s♪♫♬#*]*$")
+_WATERMARK = re.compile(r"opensubtitles|subscene|addic7ed|yifysubtitles|legendas?\s*(por|by|:)|subtitles?\s*(by|:)|sync(ed|hronized)?\s*(by|:)|"
+                        r"resync|tradu[cç][aã]o\s*(por|:)|revis[aã]o\s*(por|:)|https?://|www\.|\.(com|org|net)\b", re.I)
+_ACRONYM_OK = {"FBI", "CIA", "USA", "UK", "DVD", "TV", "NASA", "DNA", "NYPD", "LAPD", "UFO", "SOS", "VIP", "PC", "NSA", "DEA", "SWAT", "AIDS", "HIV", "GPS", "CEO", "SMS", "BBC", "CNN", "NYC"}
+_NO_VOWEL = re.compile(r"^[B-DF-HJ-NP-TV-Z]{2,5}$")
+OPTIONS = ("style", "hi", "common", "uppercase")
+
+
+def strip_style(lines: list[str]) -> list[str]:
+    return [STYLE_RE.sub("", l) for l in lines]
+
+
+def remove_hi(lines: list[str]) -> list[str]:
+    """Remove descrições para surdos: [ruído], (música) no início/fim, «NOME:» em maiúsculas e linhas só com ♪."""
+    out: list[str] = []
+    for l in lines:
+        m = re.match(r"^(\s*[-–—]\s*)?(.*)$", l)
+        dash, body = (m.group(1) or ""), m.group(2)
+        body = _BRACKETS.sub("", body)
+        for _ in range(3):
+            body = _PAREN_START.sub("", body)
+        body = _PAREN_END.sub("", body)
+        body = _SPEAKER.sub("", body.strip())
+        body = re.sub(r"[ \t]{2,}", " ", body).strip()
+        if not body or _MUSIC_ONLY.match(body):
+            continue
+        out.append((dash.strip() + " " if dash else "") + body)
+    if len(out) == 1 and len(lines) > 1 and re.match(r"^[-–—]\s+", out[0]):
+        out[0] = re.sub(r"^[-–—]\s+", "", out[0])               # sobrou uma só fala: sem travessão
+    return out
+
+
+def common_fixes(lines: list[str], lang: str | None = None) -> list[str]:
+    out = []
+    for l in lines:
+        l = l.replace(" ", " ")
+        l = re.sub(r"[ \t]{2,}", " ", l).strip()
+        l = re.sub(r"^[–—]\s*", "- ", l)
+        l = re.sub(r"^-(?=[A-Za-zÀ-ÿ¿¡\"'♪])", "- ", l)
+        if (lang or "")[:2] != "fr":
+            l = re.sub(r"\s+([,.;:!?])", r"\1", l)
+        l = re.sub(r"([,;!?])(?=[A-Za-zÀ-ÿ])", r"\1 ", l)
+        l = re.sub(r"(?<=[a-zà-ÿ]{3})\.(?=[A-ZÀ-Ý][a-zà-ÿ])", ". ", l)
+        l = l.replace("…", "...")
+        l = re.sub(r"(?<![.])\.\.(?![.])", "...", l)
+        if l.strip():
+            out.append(l)
+    return out
+
+
+def fix_uppercase(lines: list[str], lang: str | None = None) -> list[str]:
+    text = " ".join(lines)
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 8 or len(text.split()) < 2 or sum(c.isupper() for c in letters) / len(letters) < 0.9:
+        return lines                                              # não é uma fala toda em maiúsculas
+    out = []
+    for l in lines:
+        words = re.split(r"(\s+)", l)
+        conv = []
+        for w in words:
+            core = re.sub(r"[^A-Za-zÀ-ÿ]", "", w)
+            if core and (core in _ACRONYM_OK or _NO_VOWEL.match(core)):
+                conv.append(w)                                     # siglas (FBI, DVD...) ficam
+            else:
+                conv.append(w.lower())
+        s = "".join(conv)
+        s = re.sub(r"(^|[.!?…]\s+|^[-–—]\s+)([a-zà-ÿ])", lambda m: m.group(1) + m.group(2).upper(), s)
+        s = re.sub(r"^(\W*)([a-zà-ÿ])", lambda m: m.group(1) + m.group(2).upper(), s)
+        if (lang or "")[:2] == "en":
+            s = re.sub(r"\bi\b(?=$|[\s'’,.!?])", "I", s)
+        out.append(s)
+    return out
+
+
+def transform_srt_text(text: str, opts: dict, lang: str | None = None, preview_limit: int = 40) -> tuple[str, dict, list[dict]]:
+    """Aplica as opções ativas a cada fala. Devolve (texto novo, estatísticas, alterações para pré-visualizar)."""
+    active = [o for o in OPTIONS if opts.get(o)]
+    if not active:
+        raise ToolError("Escolha pelo menos uma opção.")
+    crlf = "\r\n" in text
+    src = text.replace("\r\n", "\n")
+    parts = re.split(r"(\n[ \t]*\n)", src)
+    blocks: list[dict] = []
+    for i in range(0, len(parts), 2):
+        block, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else "")
+        m = TS_LINE.search(block)
+        if not m:
+            blocks.append({"raw": block + sep, "cue": False})
+            continue
+        head = block[:m.end()]
+        body = block[m.end():].lstrip("\n")
+        core = body.rstrip("\n")
+        tail = body[len(core):]                                   # \n final do ficheiro (só na última fala)
+        blocks.append({"cue": True, "head": head, "sep": sep, "tail": tail, "lines": core.split("\n") if core else [], "orig": core.split("\n") if core else []})
+    cue_blocks = [b for b in blocks if b["cue"]]
+    stats = {"cues": len(cue_blocks), "changed": 0, "dropped": 0, "style": 0, "hi": 0, "common": 0, "uppercase": 0, "watermark": 0}
+    changes: list[dict] = []
+    dropped_pos: list[int] = []
+    for pos, b in enumerate(cue_blocks, 1):
+        lines = list(b["orig"])
+        marks = []
+        for name, fn in (("style", strip_style), ("hi", remove_hi), ("common", lambda x: common_fixes(x, lang)), ("uppercase", lambda x: fix_uppercase(x, lang))):
+            if name in active:
+                new = fn(lines)
+                if new != lines:
+                    stats[name] += 1
+                    marks.append(name)
+                lines = new
+        if "common" in active and (pos <= 3 or pos > len(cue_blocks) - 3) and lines and len(" ".join(lines)) < 140 and _WATERMARK.search(" ".join(lines)):
+            stats["watermark"] += 1
+            marks.append("watermark")
+            lines = []
+        b["lines"] = lines
+        if lines != b["orig"]:
+            stats["changed"] += 1
+            if not lines:
+                stats["dropped"] += 1
+                dropped_pos.append(pos)
+            if len(changes) < preview_limit:
+                changes.append({"n": pos, "before": " ⏎ ".join(b["orig"])[:160], "after": " ⏎ ".join(lines)[:160] if lines else "(fala removida)", "tags": marks})
+    out = []
+    for b in blocks:
+        if not b["cue"]:
+            out.append(b["raw"])
+        elif b["lines"]:
+            out.append(b["head"] + "\n" + "\n".join(b["lines"]) + b["tail"] + b["sep"])
+        # falas ficam vazias → removidas (inclui o separador)
+    res = "".join(out)
+    if stats["dropped"]:
+        res = _renumber(res)
+    stats["dropped_positions"] = dropped_pos
+    if crlf:
+        res = res.replace("\n", "\r\n")
+    return res, stats, changes
