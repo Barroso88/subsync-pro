@@ -67,6 +67,8 @@ class App:
         self.jobs.register("revalidate", self._job_revalidate)
         self.jobs.register("webhook_import", self._job_webhook_import)
         self.jobs.register("bazarr_batch", self._job_bazarr_batch)
+        self.jobs.register("convert_scan", self._job_convert_scan)
+        self.jobs.register("convert_batch", self._job_convert_batch)
 
     # ---- ciclo de vida -----------------------------------------------------
     def start(self) -> None:
@@ -1191,6 +1193,68 @@ class App:
         sub = {"library_id": e["library_id"], "path": real}
         self._rescan_dir(sub)
         return {"restored": True}
+
+    # ---- conversão em lote (SRT/UTF-8) ---------------------------------------------
+    MAX_CONVERT_ROWS = 4000
+
+    def start_convert_scan(self) -> int:
+        return self.jobs.submit("convert_scan", "Procurar legendas a converter", {}, dedupe=True)
+
+    def _job_convert_scan(self, ctx: JobContext, p: dict) -> dict:
+        """Só lê: lista as legendas que precisam de conversão/correção, sem alterar nada."""
+        writable = {l["id"] for l in self.libraries() if l["effective_write"]}
+        rows_ = [r for r in self.db.query(
+            "SELECT s.id, s.path, s.lang, s.library_id, m.title, m.year FROM subtitles s LEFT JOIN media_items m ON m.id=s.media_id "
+            "WHERE s.kind='external' AND s.present=1 AND s.status='ok' AND s.text_based=1 ORDER BY lower(coalesce(m.title,s.path)), s.path") if r["library_id"] in writable]
+        ctx.set_total(len(rows_))
+        out = {"checked": len(rows_), "items": [], "conflicts": 0, "errors": 0, "truncated": False, "by_reason": {}}
+        for r in rows_:
+            ctx.check_cancel()
+            ctx.step(os.path.basename(r["path"]), message=f"{len(out['items'])} a converter")
+            try:
+                sub, real, data, target, plan = self._convert_plan(r["id"], {"fix_mojibake": True})
+            except ServiceError as e:
+                if e.status == 409 and "Já existe" in str(e):
+                    out["conflicts"] += 1
+                elif e.status != 422:
+                    out["errors"] += 1
+                continue
+            reason = "formato" if plan["fmt"] != "srt" else ("acentos" if plan["moji"] else "codificação")
+            out["by_reason"][reason] = out["by_reason"].get(reason, 0) + 1
+            if len(out["items"]) >= self.MAX_CONVERT_ROWS:
+                out["truncated"] = True
+                continue
+            out["items"].append({"id": r["id"], "name": os.path.basename(real), "title": r["title"], "year": r["year"], "lang": r["lang"], "format": plan["fmt"],
+                                 "encoding": plan["enc"], "bom": plan["bom"], "moji": plan["moji"], "target": os.path.basename(target), "reason": reason,
+                                 "warnings": plan["warnings"][:1] if any("�" in w for w in plan["warnings"]) else []})
+        add_event(self.db, "convert", f"Procura de legendas a converter: {len(out['items'])} candidatas em {out['checked']} verificadas ({out['conflicts']} com destino já existente).")
+        return out
+
+    def start_convert_batch(self, ids: list[int], params: dict) -> int:
+        if not ids:
+            raise ServiceError("Nenhuma legenda selecionada.")
+        return self.jobs.submit("convert_batch", f"Converter legendas para SRT/UTF-8 ({len(ids)})",
+                                {"ids": list(dict.fromkeys(ids)), "fix_mojibake": bool(params.get("fix_mojibake", True)), "keep_original": bool(params.get("keep_original"))})
+
+    def _job_convert_batch(self, ctx: JobContext, p: dict) -> dict:
+        ids = p["ids"]
+        ctx.set_total(len(ids))
+        prm = {"fix_mojibake": p.get("fix_mojibake", True), "keep_original": p.get("keep_original", False)}
+        out = {"converted": 0, "skipped": 0, "errors": 0, "details": []}
+        for sid in ids:
+            ctx.check_cancel()
+            r = self.db.one("SELECT path FROM subtitles WHERE id=?", (sid,))
+            ctx.step(os.path.basename(r["path"]) if r else str(sid), message=f"{out['converted']} convertidas")
+            try:
+                sub, real, data, target, plan = self._convert_plan(sid, prm)     # reavalia no disco: o que foi pré-visualizado pode ter mudado
+                self._convert_apply(sid, prm, st.sha1(data))
+                out["converted"] += 1
+            except ServiceError as e:
+                out["skipped" if e.status in (404, 409, 422) else "errors"] += 1
+                if len(out["details"]) < 40:
+                    out["details"].append({"id": sid, "name": os.path.basename(r["path"]) if r else None, "error": str(e)})
+        add_event(self.db, "convert", f"Conversão em lote: {out['converted']} convertidas, {out['skipped']} ignoradas, {out['errors']} erros.")
+        return out
 
     # ---- legendas vazias (listar / apagar com salvaguardas) --------------------
     def _empty_rows(self, q: str | None = None, lang: str | None = None) -> list[dict]:

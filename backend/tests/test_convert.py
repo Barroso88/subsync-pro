@@ -76,3 +76,28 @@ def test_api_convert_never_overwrites_existing_srt(setup):
     sid = setup.core.db.one("SELECT id FROM subtitles WHERE kind='external' AND path=? AND present=1", (str(vtt),))["id"]
     r = setup.post(f"/api/subtitles/{sid}/preview", json={"action": "convert", "params": {}})
     assert r.status_code == 409 and "não é substituído" in r.json()["detail"]                       # já existe o .pt-PT.srt
+
+
+def test_api_batch_scan_and_convert(setup):
+    from tests.test_subtitle_tools import wait_job
+    d = setup.dir
+    (d / "Filme Teste (2024).pt-BR.ass").write_text(ASS, "utf-8")
+    good = "1\n00:00:01,000 --> 00:00:02,000\nNão sei o que é isso, você.\n" * 1
+    (d / "Filme Teste (2024).es.srt").write_bytes(good.encode("cp1252"))
+    wait_job(setup.core, setup.post("/api/scan", json={}).json()["job_id"])
+    jid = setup.post("/api/conversions/scan").json()["job_id"]
+    wait_job(setup.core, jid)
+    res = setup.get(f"/api/jobs/{jid}").json()["result"]
+    names = {i["name"]: i for i in res["items"]}
+    assert set(names) == {"Filme Teste (2024).pt-BR.ass", "Filme Teste (2024).es.srt"} and res["by_reason"] == {"formato": 1, "codificação": 1}
+    assert (d / "Filme Teste (2024).pt-BR.ass").exists()                                       # a procura não altera nada
+    jid = setup.post("/api/conversions/apply", json={"ids": [i["id"] for i in res["items"]]}).json()["job_id"]
+    wait_job(setup.core, jid)
+    r = setup.get(f"/api/jobs/{jid}").json()["result"]
+    assert r["converted"] == 2 and r["errors"] == 0
+    assert (d / "Filme Teste (2024).pt-BR.srt").exists() and not (d / "Filme Teste (2024).pt-BR.ass").exists()
+    assert (d / "Filme Teste (2024).es.srt").read_bytes() == good.encode("utf-8")
+    assert len(list(setup.core.cfg.backup_dir.iterdir())) == 2
+    jid = setup.post("/api/conversions/scan").json()["job_id"]
+    wait_job(setup.core, jid)
+    assert setup.get(f"/api/jobs/{jid}").json()["result"]["items"] == []                         # nada mais a converter

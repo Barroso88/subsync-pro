@@ -18,6 +18,7 @@ import Jobs from "./pages/Jobs";
 import Providers from "./pages/Providers";
 import SettingsPage from "./pages/Settings";
 import EmptySubs from "./pages/EmptySubs";
+import Convert from "./pages/Convert";
 
 const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: false } } });
 
@@ -36,6 +37,7 @@ function Gate() {
         <Route path="episodios" element={<Episodes />} />
         <Route path="em-falta" element={<Missing />} />
         <Route path="legendas-vazias" element={<EmptySubs />} />
+        <Route path="converter" element={<Convert />} />
         <Route path="procurar" element={<SearchPage />} />
         <Route path="downloads" element={<Downloads />} />
         <Route path="tarefas" element={<Jobs />} />

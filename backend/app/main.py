@@ -678,6 +678,19 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def restore_edit(eid: int, b: RestoreIn):
         return core.restore_edit(eid, b.force)
 
+    class ConvertBatchIn(BaseModel):
+        ids: list[int] = Field(max_length=5000)
+        fix_mojibake: bool = True
+        keep_original: bool = False
+
+    @api.post("/conversions/scan", status_code=202)
+    def convert_scan():
+        return {"job_id": core.start_convert_scan()}
+
+    @api.post("/conversions/apply", status_code=202)
+    def convert_apply(b: ConvertBatchIn):
+        return {"job_id": core.start_convert_batch(b.ids, {"fix_mojibake": b.fix_mojibake, "keep_original": b.keep_original})}
+
     class DeleteEmptyIn(BaseModel):
         ids: list[int] = Field(max_length=5000)
 
