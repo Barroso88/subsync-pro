@@ -251,7 +251,9 @@ def evaluate_content(ev: Evaluation, media: dict, parsed: ParsedSub, analysis: A
             if res.match_ratio >= 0.6 and abs(res.offset_ms) <= 1500 and abs(res.drift_ms) <= 2000:
                 ev.sync = "validated_reference"
                 add(f"Alinhada com a legenda de referência «{ref_name}» ({round(res.match_ratio * 100)} % dos eventos)", 20)
-                ev.notes.append("Validação feita contra uma legenda já existente que se assume sincronizada; não foi analisado o áudio.")
+                ev.notes.append("Validação feita contra a faixa de legenda embutida no próprio vídeo, que se assume sincronizada; não foi analisado o áudio."
+                                if ref_name.startswith("faixa embutida") else
+                                "Validação feita contra uma legenda já existente que se assume sincronizada; não foi analisado o áudio.")
             elif res.match_ratio >= 0.4 and (abs(res.offset_ms) > 1500 or abs(res.drift_ms) > 2000):
                 ev.sync = "suspect"
                 add(f"Offset estimado de {res.offset_ms / 1000:+.1f} s face à referência (deriva {res.drift_ms / 1000:+.1f} s)", -20)

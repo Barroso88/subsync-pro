@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from . import coverage as cov
+from . import ffprobe as fp
 from .config import AppConfig, Secrets
 from .db import Database, jloads, rows
 from .evaluator import Evaluation, evaluate_content, evaluate_metadata
@@ -54,6 +55,8 @@ class App:
         self.settings = Settings(self.db)
         self.transport = transport      # injeção para testes
         self.jobs = JobManager(self.db, cfg.max_jobs)
+        self._ref_cache: dict = {}
+        self._ref_lock = threading.Lock()
         self.jobs.mark_interrupted()
         self.scanner = Scanner(self.db, self.settings, cfg.ffprobe_bin, cfg.ffprobe_workers, cfg.ffmpeg_bin)
         self._providers: dict[str, Any] = {}
@@ -473,6 +476,37 @@ class App:
                 continue
             if parsed and len(parsed.cues) >= 30:
                 return os.path.basename(path), parsed
+        return self._embedded_reference(media, candidate_lang)
+
+    _REF_CACHE_MAX = 6
+
+    def _embedded_reference(self, media: dict, candidate_lang: str | None) -> tuple[str, ParsedSub] | None:
+        """Sem referência externa: extrai UMA faixa de texto embutida (só quando se descarrega uma legenda) e usa os seus tempos.
+        Compara só tempos, por isso serve qualquer idioma. Em cache para não reabrir o vídeo a cada candidata."""
+        if not self.settings.get("embedded_reference") or not media.get("path"):
+            return None
+        try:
+            stt = os.stat(media["path"])
+        except OSError:
+            return None
+        tracks = self.db.query("SELECT stream_index,lang,title FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1 AND text_based=1 "
+                               "AND forced=0 AND stream_index IS NOT NULL", (media["id"],))
+        tracks = [t for t in tracks if "comment" not in (t["title"] or "").lower()]
+        tracks.sort(key=lambda t: (t["lang"] != candidate_lang, t["lang"] != "en", t["stream_index"]))
+        for t in tracks[:2]:
+            key = (media["id"], t["stream_index"], stt.st_size, int(stt.st_mtime))
+            with self._ref_lock:
+                hit = self._ref_cache.get(key)
+            if hit is None:
+                data = fp.extract_subtitle_text(media["path"], t["stream_index"], self.cfg.ffmpeg_bin)
+                parsed = parse_bytes(data, ".srt") if data else None
+                hit = parsed if parsed and len(parsed.cues) >= 30 else False
+                with self._ref_lock:
+                    self._ref_cache[key] = hit
+                    while len(self._ref_cache) > self._REF_CACHE_MAX:
+                        self._ref_cache.pop(next(iter(self._ref_cache)))
+            if hit:
+                return f"faixa embutida #{t['stream_index']} ({t['lang'] or '?'})", hit
         return None
 
     def prepare(self, media_id: int, result: dict, lang: str | None = None) -> dict:

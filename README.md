@@ -139,3 +139,4 @@ Desligada por omissão (Definições → Idiomas). Quando não há legenda no id
 - SQLite apenas (migração para PostgreSQL exigiria adaptar `db.py`).
 
 - **Ordenar por data de adição** (Filmes e Legendas em falta): «Adicionados recentemente» / «há mais tempo». A data vem do Plex (quando entrou na biblioteca), senão do Radarr/Sonarr (data de importação do ficheiro), senão da data de modificação do ficheiro. Corra «Sincronizar metadados» para preencher as datas do Plex/Radarr/Sonarr.
+- **Referência embutida**: se o filme não tem outra legenda externa para validar a sincronização, ao descarregar a app extrai **uma** faixa de texto embutida (ffmpeg, só leitura, com cache) e compara os tempos (funciona entre idiomas). Resultado «Alinhada com legenda de referência» (a nota indica «faixa embutida») ou «Possível dessincronização». Assume que a faixa embutida está sincronizada com o vídeo; **não analisa o áudio**. Desligável em Definições → Scanner.

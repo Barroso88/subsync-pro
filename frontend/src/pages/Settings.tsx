@@ -87,7 +87,10 @@ export default function SettingsPage() {
           actions={<RevalidateButton />}>
           <div className="mb-5"><Toggle checked={!!d.embedded_variant_scan} onChange={(v) => set("embedded_variant_scan", v)} disabled={!!d.generic_pt_variant}
             label="Ler o texto das legendas embutidas «pt» para estimar pt-PT/pt-BR (LENTO)"
-            hint={d.generic_pt_variant ? "Desativado enquanto «pt» sem variante estiver a ser assumido (Definições → Idiomas)." : "Abre e lê quase todo o vídeo (ffmpeg) em cada ficheiro afetado: intenso em disco/rede. Desligado por omissão; sem isto a app nunca lê o conteúdo dos vídeos para além do FFprobe."} /></div>
+            hint={d.generic_pt_variant ? "Desativado enquanto «pt» sem variante estiver a ser assumido (Definições → Idiomas)." : "Abre e lê quase todo o vídeo (ffmpeg) em cada ficheiro afetado: intenso em disco/rede. Desligado por omissão; sem isto (e sem a opção abaixo) a app nunca lê o conteúdo dos vídeos para além do FFprobe."} /></div>
+          <div className="mb-5"><Toggle checked={d.embedded_reference !== false} onChange={(v) => set("embedded_reference", v)}
+            label="Usar a legenda embutida como referência de sincronização"
+            hint="Só ao descarregar uma legenda e se o filme não tiver outra legenda externa: a app extrai UMA faixa de texto embutida (ffmpeg) e compara os tempos. Em ficheiros grandes na rede pode demorar alguns segundos a minutos; o resultado fica em cache. Desligado, essas legendas ficam «sincronização não confirmada»."/></div>
           <Field label="Intervalo da análise agendada (minutos)" hint="0 = apenas manual. O número máximo de tarefas simultâneas define-se por variável de ambiente (SUBSYNC_MAX_JOBS).">
             <input className="input max-w-[200px]" type="number" min={0} value={d.scan_interval_minutes} onChange={(e) => set("scan_interval_minutes", Number(e.target.value))} />
           </Field>
