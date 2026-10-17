@@ -4,7 +4,15 @@
 - Unraid 6.12+ com Docker ativo. Plugin **Docker Compose Manager** (recomendado) *ou* adicionar o contentor manualmente.
 - Os caminhos abaixo são exemplos; use os das suas shares (`/mnt/user/Filmes`, `/mnt/user/Séries`, …).
 
-## Opção A — Docker Compose (recomendada)
+## Opção 0 — Template Unraid (mais simples)
+
+A imagem é publicada automaticamente em `ghcr.io/barroso88/subsync-pro:latest` (amd64 e arm64) a cada push para `main`.
+
+1. No Unraid: **Docker → Add Container → Template** e, em *Template repositories*, ou simplesmente cole o conteúdo de [`unraid/subsync-pro.xml`](../unraid/subsync-pro.xml) em `/boot/config/plugins/dockerMan/templates-user/subsync-pro.xml` e escolha **subsync-pro** na lista de templates.
+2. Ajuste os caminhos das shares e defina a palavra-passe. **Apply**.
+3. **Pacote privado:** por omissão o pacote GHCR de um repositório privado é privado. Ou o torna público (GitHub → Packages → subsync-pro → *Package settings* → *Change visibility*), ou no Unraid faz `docker login ghcr.io -u Barroso88` com um *Personal Access Token* com permissão `read:packages` antes de instalar.
+
+## Opção A — Docker Compose
 
 1. Copie o projeto para `/mnt/user/appdata/subsync-pro-src` (ou clone o repositório).
 2. `cp .env.example .env` e edite:
@@ -16,7 +24,7 @@
    PGID=100
    SUBSYNC_AUTH_PASSWORD=uma-palavra-passe-forte
    ```
-3. `docker compose up -d --build`
+3. `docker compose pull && docker compose up -d` (ou `--build` com a linha `build: .` ativada, para construir localmente)
 4. Abra `http://IP-DO-UNRAID:8484`.
 
 Se tiver mais shares (ex.: `/mnt/user/Docs`), acrescente linhas ao `volumes:` do `docker-compose.yml`, por exemplo `- /mnt/user/Anime:/media/Anime`.
@@ -25,7 +33,7 @@ Se tiver mais shares (ex.: `/mnt/user/Docs`), acrescente linhas ao `volumes:` do
 
 | Campo | Valor |
 |---|---|
-| Repository | `subsync-pro:latest` (construa antes com `docker build -t subsync-pro .`) |
+| Repository | `ghcr.io/barroso88/subsync-pro:latest` |
 | Network | bridge |
 | Port | Host `8484` → Container `8484` |
 | Path | `/mnt/user/appdata/subsync-pro` → `/data` (Read/Write) |
@@ -57,8 +65,8 @@ Não ative *Privileged* nem monte `/var/run/docker.sock`: não é necessário.
 
 ```bash
 cd /mnt/user/appdata/subsync-pro-src
-git pull            # ou substitua os ficheiros
-docker compose up -d --build
+docker compose pull && docker compose up -d   # nova imagem do GHCR
+# no template Unraid: Docker → subsync-pro → Force update
 ```
 Os dados em `/data` (BD, definições, segredos) persistem; as migrações da BD aplicam-se no arranque.
 

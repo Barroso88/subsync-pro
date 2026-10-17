@@ -1,7 +1,8 @@
 services:
   subsync:
-    build: .
-    image: subsync-pro:latest
+    image: ghcr.io/barroso88/subsync-pro:latest
+    # Para construir localmente em vez de usar a imagem publicada: docker compose build  (descomente a linha abaixo)
+    # build: .
     container_name: subsync-pro
     restart: unless-stopped
     # Unraid: nobody:users = 99:100. Ajuste para o UID/GID que o Plex usa nas suas shares.

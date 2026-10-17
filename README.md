@@ -53,7 +53,7 @@ Testes: `cd backend && ../.venv/bin/python -m pytest -q`
 
 ```bash
 cp .env.example .env     # ajuste caminhos, PUID/PGID e (recomendado) SUBSYNC_AUTH_PASSWORD
-docker compose up -d --build
+docker compose pull && docker compose up -d      # imagem: ghcr.io/barroso88/subsync-pro:latest
 ```
 
 Abra `http://<servidor>:8484` → **Definições → Bibliotecas → Adicionar**. Guia completo para Unraid: [docs/UNRAID.md](docs/UNRAID.md).

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>subsync-pro</Name>
+  <Repository>ghcr.io/barroso88/subsync-pro:latest</Repository>
+  <Registry>https://github.com/Barroso88/subsync-pro/pkgs/container/subsync-pro</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Barroso88/subsync-pro/issues</Support>
+  <Project>https://github.com/Barroso88/subsync-pro</Project>
+  <Overview>Gestor self-hosted de legendas para Plex/Radarr/Sonarr: inventaria filmes e séries, deteta idiomas em falta (externas e embutidas), pesquisa no OpenSubtitles/SubDL, avalia a compatibilidade de forma honesta e instala as legendas com segurança. Nunca altera vídeos nem substitui legendas sem confirmação.</Overview>
+  <Category>MediaApp:Video Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8484]/</WebUI>
+  <ExtraParams>--user 99:100 --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /tmp --memory 1g --cpus 2</ExtraParams>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Defina SUBSYNC_AUTH_PASSWORD. Monte as pastas de média com escrita (rw) apenas se quiser guardar legendas nelas.</Requires>
+  <Config Name="Web UI" Target="8484" Default="8484" Mode="tcp" Description="Porta da interface web" Type="Port" Display="always" Required="true" Mask="false">8484</Config>
+  <Config Name="Config / BD" Target="/data" Default="/mnt/user/appdata/subsync-pro" Mode="rw" Description="Base de dados, definições, segredos, logs, cópias de segurança" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/subsync-pro</Config>
+  <Config Name="Filmes" Target="/media/Filmes" Default="/mnt/user/Filmes" Mode="rw" Description="Use 'ro' se não quiser que a app guarde legendas aqui" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/Filmes</Config>
+  <Config Name="Séries" Target="/media/Séries" Default="/mnt/user/Séries" Mode="rw" Description="Use 'ro' se não quiser que a app guarde legendas aqui" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/Séries</Config>
+  <Config Name="Palavra-passe da UI" Target="SUBSYNC_AUTH_PASSWORD" Default="" Mode="" Description="Recomendado. Sem isto a interface fica sem autenticação." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Fuso horário" Target="TZ" Default="Europe/Lisbon" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Lisbon</Config>
+  <Config Name="Tarefas simultâneas" Target="SUBSYNC_MAX_JOBS" Default="2" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="OpenSubtitles API key" Target="OPENSUBTITLES_API_KEY" Default="" Mode="" Description="Opcional aqui; também pode ser definida na UI" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="OpenSubtitles utilizador" Target="OPENSUBTITLES_USERNAME" Default="" Mode="" Description="Necessário para descarregar" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="OpenSubtitles palavra-passe" Target="OPENSUBTITLES_PASSWORD" Default="" Mode="" Description="Necessário para descarregar" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="SubDL API key" Target="SUBDL_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Plex token" Target="PLEX_TOKEN" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Radarr API key" Target="RADARR_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Sonarr API key" Target="SONARR_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+</Container>
