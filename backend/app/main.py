@@ -273,7 +273,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def media_list(kind: str | None = None, q: str | None = None, lang: str | None = None,
                    status: str | None = None, series: str | None = None, season: int | None = None,
                    sort: str = "title", limit: int = Query(60, le=500), offset: int = 0):
-        """status: missing | has | suspect | unverified"""
+        """status: missing | none (sem nenhuma legenda) | other (só noutros idiomas) | has | suspect | unverified"""
         args: list[Any] = []
         where = ["m.present=1"]
         if kind in ("movie", "episode"):
@@ -296,16 +296,22 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         out = []
         for r in rows_:
             c = covs.get(r["id"], {})
-            if lang and lang not in c.get("covered", {}) and status != "missing":
-                if status in (None, "", "has"):
+            covered = c.get("covered", {})
+            miss = (lang not in covered) if lang else bool(c.get("missing"))
+            nsubs = c.get("n_external", 0) + c.get("n_embedded", 0)
+            if status in ("missing", "none", "other"):
+                if not miss or (status == "none" and nsubs) or (status == "other" and not nsubs):
                     continue
-            if status == "missing" and not (c.get("missing") if not lang else lang not in c.get("covered", {})):
-                continue
-            if status == "has" and (not c.get("covered") or (lang and lang not in c["covered"])):
-                continue
-            if status == "suspect" and not c.get("suspect"):
-                continue
-            if status == "unverified" and not c.get("unverified"):
+            elif status == "has":
+                if (lang and lang not in covered) or (not lang and not covered):
+                    continue
+            elif status == "suspect":
+                if not c.get("suspect"):
+                    continue
+            elif status == "unverified":
+                if not c.get("unverified"):
+                    continue
+            elif lang and lang not in covered:
                 continue
             out.append(_item_view(dict(r), c))
         return {"total": len(out), "items": out[offset: offset + limit]}

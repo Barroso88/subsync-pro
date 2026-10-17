@@ -39,8 +39,8 @@ export function Poster({ item, className }: { item: Item; className?: string }) 
   );
 }
 
-export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, showSeries = false, lockStatus = false }: {
-  kind: "movie" | "episode"; defaultStatus?: string; allowGrid?: boolean; showSeries?: boolean; lockStatus?: boolean;
+export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, missingMode = false }: {
+  kind: "movie" | "episode"; defaultStatus?: string; allowGrid?: boolean; missingMode?: boolean;
 }) {
   const meta = useMeta();
   const settings = useSettings();
@@ -70,13 +70,13 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, show
     <div>
       <div className="flex flex-wrap items-center gap-2.5 mb-4">
         <SearchBox value={q} onChange={setQ} />
-        <select className="input !w-auto" value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Idioma">
+        {!missingMode && <select className="input !w-auto" value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Idioma">
           <option value="">Todos os idiomas</option>
           {langs.map((l) => <option key={l} value={l}>{meta.data?.languages.find((x) => x.code === l)?.name ?? l}</option>)}
-        </select>
-        {!lockStatus && <Tabs value={status} onChange={setStatus} items={STATUS.map((s) => ({ id: s.id, label: s.label }))} />}
+        </select>}
+        {!missingMode && <Tabs value={status} onChange={setStatus} items={STATUS.map((s) => ({ id: s.id, label: s.label }))} />}
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-dim tabular-nums">{total} itens</span>
+          <span className="text-xs text-dim tabular-nums">{total} {total === 1 ? "item" : "itens"}</span>
           {allowGrid && (
             <div className="inline-flex p-0.5 rounded-lg bg-s2 border border-line">
               {([["grid", LayoutGrid], ["table", List]] as const).map(([v, I]) => (
@@ -87,6 +87,16 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, show
         </div>
       </div>
 
+      {missingMode && (
+        <div className="card p-3.5 mb-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2"><span className="label w-28">Situação</span>
+            <Tabs value={status || "missing"} onChange={setStatus} items={[
+              { id: "missing", label: "Todas as em falta" }, { id: "none", label: "Sem nenhuma legenda" }, { id: "other", label: "Só noutros idiomas" }]} /></div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2"><span className="label w-28">Idioma em falta</span>
+            <Tabs value={lang} onChange={setLang} items={[{ id: "", label: "Qualquer prioritário" }, ...langs.map((l) => ({ id: l, label: l }))]} /></div>
+          <div className="text-xs text-dim">«Só noutros idiomas»: já têm legenda (externa ou embutida) mas não no idioma escolhido — são as melhores candidatas a tradução automática.</div>
+        </div>
+      )}
       {list.isError && <ErrorBox error={list.error} retry={() => list.refetch()} />}
       {list.isLoading && (view === "grid" ? <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">{Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="aspect-[2/3]" />)}</div>
         : <div className="space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-11" />)}</div>)}

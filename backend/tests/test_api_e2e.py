@@ -207,3 +207,22 @@ def test_cancel_job(client):
             break
         time.sleep(0.05)
     assert client.get(f"/api/jobs/{j}").json()["status"] == "cancelled"
+
+
+def test_missing_filters_none_other_and_language(client):
+    # E01: pt-PT externa · E02: en embutida · filme: en externa · E03 (novo): sem nada
+    (client.root / "Séries" / "Minha Série" / "Season 01" / "Minha Série - S01E03.mkv").write_bytes(b"\3" * 200_000)
+    j = client.post("/api/scan", json={}).json()["job_id"]
+    for _ in range(200):
+        if client.get(f"/api/jobs/{j}").json()["status"] in ("done", "failed"):
+            break
+        time.sleep(0.05)
+    client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "secondary"}]})
+    g = lambda **p: sorted(i["file_name"] for i in client.get("/api/media", params=p).json()["items"])
+    assert len(g(status="missing")) == 3                                                       # E02, E03, filme
+    assert g(status="none") == ["Minha Série - S01E03.mkv"]                                    # sem nenhuma legenda
+    assert g(status="other") == ["Filme Teste (2024).mkv", "Minha Série - S01E02.mkv"]        # só noutros idiomas (traduzíveis)
+    assert len(g(status="missing", lang="pt-BR")) == 4                                         # pt-BR falta em todos
+    assert len(g(status="missing", lang="pt-PT")) == 3
+    assert g(status="none", lang="pt-BR") == ["Minha Série - S01E03.mkv"]
+    assert g(status="other", lang="pt-BR") == ["Filme Teste (2024).mkv", "Minha Série - S01E01.mkv", "Minha Série - S01E02.mkv"]

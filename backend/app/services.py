@@ -252,7 +252,8 @@ class App:
             return cache.read_bytes(), ctype_file.read_text() if ctype_file.exists() else "image/jpeg"
         from .integrations.common import fetch_public_image
         errors: list[str] = []
-        for ref in str(m["poster"]).split("|"):
+        refs = sorted(str(m["poster"]).split("|"), key=lambda r: not r.startswith("https://"))
+        for ref in refs:
             try:
                 if ref.startswith("plex:"):
                     rel = ref[5:]
@@ -346,6 +347,8 @@ class App:
     def build_query(self, media: dict, languages: list[str] | None = None) -> SearchQuery:
         s = self.settings.all()
         langs = languages or [l["code"] for l in s["languages"]]
+        if not languages and s["translation"]["enabled"]:
+            langs = langs + [x for x in s["translation"]["source_languages"] if x not in langs]   # candidatas a traduzir
         pl: list[str] = []
         for l in langs:
             pl += ["pt-PT", "pt-BR"] if l == "pt" else [l]

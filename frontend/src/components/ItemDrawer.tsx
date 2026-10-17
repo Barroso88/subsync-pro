@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages } from "lucide-react";
 import { api, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
@@ -110,9 +111,12 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
   const [detail, setDetail] = useState<Candidate | null>(null);
   const [prepared, setPrepared] = useState<Download | null>(null);
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get<Record<string, any>>("/settings") });
-  const configured: string[] = settings.data ? settings.data.languages.map((l: any) => l.code) : [];
+  const baseLangs: string[] = settings.data ? settings.data.languages.map((l: any) => l.code) : [];
+  const trOn = !!settings.data?.translation?.enabled;
+  const sources: string[] = trOn ? (settings.data?.translation?.source_languages ?? []) : [];
+  const configured: string[] = [...baseLangs, ...sources.filter((x) => !baseLangs.includes(x))];
   const tr = useQuery({ queryKey: ["translation"], queryFn: () => api.get<any>("/translation"), enabled: !!settings.data?.translation?.enabled });
-  const targets: string[] = configured.filter((c) => ["pt-PT", "pt-BR", "es", "fr", "de", "it", "nl"].includes(c));
+  const targets: string[] = baseLangs.filter((c) => ["pt-PT", "pt-BR", "es", "fr", "de", "it", "nl"].includes(c));
   const canTranslate = !!settings.data?.translation?.enabled && tr.data?.configured && targets.length > 0;
   const [target, setTarget] = useState<string>("");
   const [askTr, setAskTr] = useState<Candidate | null>(null);
@@ -147,6 +151,14 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
         </button>
         <div className="text-[11px] text-dim">A pesquisa usa o hash do ficheiro quando o fornecedor o suporta. Nada é descarregado nem escrito até confirmar.</div>
       </div>
+      {res && !trOn && (
+        <div className="card border-info/30 bg-info/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-info shrink-0 mt-0.5" />
+          <div>Sem legenda no seu idioma? Pode <b>traduzir automaticamente</b> uma legenda inglesa (DeepL). Ative-o em <Link to="/definicoes" className="text-accent underline">Definições → Idiomas</Link> e coloque a chave em <Link to="/fornecedores" className="text-accent underline">Fornecedores</Link>.</div></div>
+      )}
+      {res && trOn && !tr.data?.configured && !tr.isLoading && (
+        <div className="card border-warn/30 bg-warn/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-warn shrink-0 mt-0.5" />
+          <div>A tradução está ativada mas falta a chave do DeepL: <Link to="/fornecedores" className="text-accent underline">Fornecedores → DeepL</Link>.</div></div>
+      )}
       {res?.errors.map((e, i) => (
         <div key={i} className="card border-warn/30 p-3 text-sm flex gap-2.5"><AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" /><div><b className="font-medium">{e.provider}</b>: {e.message}{e.auth && <span className="text-mute"> — configure em Fornecedores.</span>}{e.retry_after ? ` Tente novamente em ${e.retry_after}s.` : ""}</div></div>
       ))}
