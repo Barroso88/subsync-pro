@@ -1,35 +1,37 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Film, GitCompare, Loader2, Move, RotateCcw, Ruler, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Film, FileCog, GitCompare, Loader2, Move, RotateCcw, Ruler, Trash2, Wand2 } from "lucide-react";
 import { api } from "../api";
 import { cx, fmtTs } from "../lib";
 import { Badge, Modal, Skeleton, Tabs, useToast } from "./ui";
 
-type Tool = "shift" | "fps" | "twopoint" | "reference" | "text" | "delete";
+type Tool = "shift" | "fps" | "twopoint" | "reference" | "text" | "convert" | "delete";
 interface Cue { n: number; start: number; end: number; text: string }
 interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number }[] }
 interface PRow { n: number; old_start: number; new_start: number; new_end: number; text: string }
 interface TextChange { n: number; before: string; after: string; tags: string[] }
 interface Preview {
-  kind?: "text"; stats?: Record<string, number>; changes?: TextChange[];
+  kind?: "text" | "convert"; stats?: Record<string, number>; changes?: TextChange[];
+  target?: string; format?: string; bom?: boolean; cues?: number; moji?: number; samples?: { n: number; start: number; end: number; text: string }[];
   summary: string; base_hash: string; total: number; head: PRow[]; tail: PRow[]; warnings: string[]; dropped: number; clamped: number;
   first_start_before: number; first_start_after: number; last_end_before: number; last_end_after: number; duration_check: string | null; encoding: string;
   estimate: { offset_ms?: number; match_ratio?: number; drift_ms?: number; compared?: number } | null;
 }
 const FPS = [23.976, 24, 25, 29.97, 30];
 
-export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: string; lang: string | null; canEdit: boolean; isSrt: boolean } | null; onClose: () => void }) {
+export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: string; lang: string | null; canEdit: boolean; isSrt: boolean; isText: boolean } | null; onClose: () => void }) {
   const toast = useToast();
   const qc = useQueryClient();
   const [tool, setTool] = useState<Tool>("shift");
-  const [params, setParams] = useState<Record<string, any>>({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false });
+  const [params, setParams] = useState<Record<string, any>>({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false });
   const [pv, setPv] = useState<Preview | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
   useEffect(() => { setPv(null); setConfirmDel(false); }, [tool, sub?.id]);
-  useEffect(() => { if (sub) { setTool("shift"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false }); setPv(null); } }, [sub?.id]);
+  useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false }); setPv(null); } }, [sub?.id]);
 
   const cues = useQuery({ queryKey: ["sub-cues", sub?.id], queryFn: () => api.get<CuesRes>(`/subtitles/${sub!.id}/cues`), enabled: !!sub && sub.isSrt });
-  const body = () => ({ action: tool === "text" ? "textfix" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase } : params });
+  const body = () => ({ action: tool === "text" ? "textfix" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
+    : tool === "convert" ? { fix_mojibake: !!params.fix_mojibake, keep_original: !!params.keep_original } : params });
   const preview = useMutation({ mutationFn: () => api.post<Preview>(`/subtitles/${sub!.id}/preview`, body()), onSuccess: setPv, onError: (e: Error) => { setPv(null); toast("bad", e.message); } });
   const apply = useMutation({
     mutationFn: () => api.post<{ edit_id: number; summary: string }>(`/subtitles/${sub!.id}/apply`, { ...body(), base_hash: pv!.base_hash }),
@@ -45,7 +47,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   if (!sub) return null;
   const refs = cues.data?.references ?? [];
   const pickCue = (slot: 1 | 2, c: Cue) => { set(`cue${slot}`, c.n); if (!params[`time${slot}`]) set(`time${slot}`, fmtTs(c.start)); };
-  const editable = sub.canEdit && sub.isSrt;
+  const editable = sub.canEdit && (tool === "convert" ? sub.isText : sub.isSrt);
 
   const row = (r: PRow) => (
     <tr key={r.n} className="border-b border-line/50 last:border-0 text-xs">
@@ -73,12 +75,12 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
       ) : (
         <><button className="btn-ghost" onClick={onClose}>Fechar</button>
           <button className="btn-ghost" disabled={!editable || preview.isPending} onClick={() => preview.mutate()}>{preview.isPending && <Loader2 size={14} className="animate-spin" />}Pré-visualizar</button>
-          <button className="btn-primary" disabled={!pv || apply.isPending || (pv.kind !== "text" && pv.dropped > 0 && pv.dropped > pv.total * 0.05)} onClick={() => apply.mutate()}>{apply.isPending && <Loader2 size={14} className="animate-spin" />}Aplicar (guarda cópia do original)</button></>
+          <button className="btn-primary" disabled={!pv || apply.isPending || (!pv.kind && pv.dropped > 0 && pv.dropped > pv.total * 0.05)} onClick={() => apply.mutate()}>{apply.isPending && <Loader2 size={14} className="animate-spin" />}Aplicar (guarda cópia do original)</button></>
       )}>
       <div className="space-y-4">
         {!sub.canEdit && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Esta legenda está numa biblioteca só de leitura (ou sem permissão de escrita). Ative a escrita em Definições → Bibliotecas.</div>}
-        {sub.canEdit && !sub.isSrt && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Por agora só se editam legendas SRT. Pode, no entanto, movê-la para backup.</div>}
-        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "text", label: "Limpar texto" }, { id: "delete", label: "Apagar" }]} />
+        {sub.canEdit && !sub.isSrt && tool !== "convert" && tool !== "delete" && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Estas ferramentas só editam legendas SRT. Converta-a primeiro no separador «Converter».</div>}
+        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
 
         {tool === "shift" && (
           <div className="space-y-2.5">
@@ -143,6 +145,17 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
             ))}
           </div>
         )}
+        {tool === "convert" && (
+          <div className="space-y-2.5">
+            <div className="text-sm text-mute flex gap-2"><FileCog size={16} className="shrink-0 mt-0.5" />Converte para <b className="text-fg">SRT em UTF-8 sem BOM</b>, o formato que a Smart TV, o Android TV e o Plex leem melhor. <b className="text-fg">Os tempos não mudam.</b> ASS/SSA/VTT passam a um novo ficheiro .srt (nunca substitui um existente); um SRT em cp1252/UTF-16 ou com BOM é reescrito no mesmo ficheiro.</div>
+            {([
+              ["fix_mojibake", "Reparar acentos partidos", "«Ã£», «Ã©», «Ã§»… (UTF-8 gravado como cp1252). Só altera as linhas em que o resultado é UTF-8 válido."],
+              ["keep_original", "Manter também o original", "Por omissão o ASS/VTT vai para backup (restaurável) para o Plex não mostrar duas legendas iguais. Só se aplica a ASS/SSA/VTT."],
+            ] as const).map(([k, t, d]) => (
+              <label key={k} className="flex items-start gap-3 cursor-pointer card bg-s2 p-3"><input type="checkbox" className="mt-1 accent-[rgb(229,160,13)]" checked={!!params[k]} onChange={(e) => set(k, e.target.checked)} /><span className="text-sm">{t}<span className="block text-xs text-mute">{d}</span></span></label>
+            ))}
+          </div>
+        )}
         {tool === "delete" && (
           <div className="space-y-2.5 text-sm">
             <div className="text-mute">A legenda é <b className="text-fg">retirada da pasta</b> do filme e guardada em <code className="text-fg">/data/backups</code>. Pode <b className="text-fg">restaurá-la</b> a qualquer momento no histórico de alterações do filme. Vídeos nunca são tocados.</div>
@@ -165,7 +178,23 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
             <div className="text-xs text-dim flex gap-1.5"><CheckCircle2 size={13} className="shrink-0 mt-0.5 text-ok" />O original fica em backup e pode ser restaurado.</div>
           </div>
         )}
-        {tool !== "delete" && tool !== "text" && pv && (
+        {tool === "convert" && pv?.kind === "convert" && (
+          <div className="space-y-3">
+            <div className="card bg-s2 p-3.5 space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium break-all"><FileCog size={15} className="text-accent shrink-0" />{pv.summary}</div>
+              <div className="text-xs text-mute">{pv.cues} falas · codificação original {pv.encoding}{pv.bom ? " com BOM" : ""}. Tempos e ordem verificados contra o original antes de gravar.</div>
+              {pv.warnings.map((w, i) => <div key={i} className="text-xs text-warn flex gap-1.5"><AlertTriangle size={13} className="shrink-0 mt-0.5" />{w}</div>)}
+            </div>
+            {pv.samples && pv.samples.length > 0 && (
+              <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">#</th><th className="th">Tempo</th><th className="th">Texto no SRT</th></tr></thead>
+                <tbody>{pv.samples.map((c) => (
+                  <tr key={c.n} className="border-b border-line/50 last:border-0 text-xs align-top"><td className="px-2 py-1.5 text-dim tabular-nums">{c.n}</td>
+                    <td className="px-2 py-1.5 font-mono text-mute whitespace-nowrap">{fmtTs(c.start)}</td><td className="px-2 py-1.5 break-words whitespace-pre-wrap">{c.text}</td></tr>))}</tbody></table></div>
+            )}
+            <div className="text-xs text-dim flex gap-1.5"><CheckCircle2 size={13} className="shrink-0 mt-0.5 text-ok" />O original fica em backup e pode ser restaurado (remove o .srt criado e repõe o ficheiro).</div>
+          </div>
+        )}
+        {tool !== "delete" && tool !== "text" && tool !== "convert" && pv && (
           <div className="space-y-3">
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Clock size={15} className="text-accent" />{pv.summary}</div>
@@ -185,7 +214,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 }
 
 interface Edit { id: number; name: string; action: string; created_at: string; restored_at: string | null; backup_exists: boolean; params: Record<string, any> }
-const ACTION: Record<string, string> = { textfix: "Limpeza de texto", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup" };
+const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup" };
 
 export function EditHistory({ mediaId }: { mediaId: number }) {
   const qc = useQueryClient();

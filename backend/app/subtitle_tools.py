@@ -392,3 +392,205 @@ def transform_srt_text(text: str, opts: dict, lang: str | None = None, preview_l
     if crlf:
         res = res.replace("\n", "\r\n")
     return res, stats, changes
+
+
+# ---- Fase 3: codificação (UTF-8) e conversão ASS/SSA/VTT → SRT ----------------------------
+
+TEXT_EXTS = (".srt", ".ass", ".ssa", ".vtt")
+_MOJI = re.compile("[ÃÂ][\u0080-¿ŒœŠšŸŽžƒˆ˜–—‘-„†-•…‰‹›€™]")
+
+
+def _cp1252_bytes(line: str) -> bytes | None:
+    out = bytearray()
+    for ch in line:
+        try:
+            out += ch.encode("cp1252")
+        except UnicodeEncodeError:
+            if ord(ch) < 256:
+                out.append(ord(ch))
+            else:
+                return None
+    return bytes(out)
+
+
+def fix_mojibake(text: str) -> tuple[str, int]:
+    """Repara «Ã£», «Ã©» etc. (UTF-8 lido como cp1252), linha a linha e só quando o resultado é UTF-8 válido."""
+    fixed = 0
+    out = []
+    for line in text.split("\n"):
+        if _MOJI.search(line):
+            b = _cp1252_bytes(line)
+            if b is not None:
+                try:
+                    new = b.decode("utf-8")
+                    if not _MOJI.search(new):
+                        out.append(new)
+                        fixed += 1
+                        continue
+                except UnicodeDecodeError:
+                    pass
+        out.append(line)
+    return "\n".join(out), fixed
+
+
+def _ass_text_to_srt(t: str) -> str:
+    t = t.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
+    def repl(m: re.Match) -> str:
+        inner, out = m.group(1), ""
+        for tag, val in re.findall(r"\\([ibu])([01])", inner):
+            out += f"<{tag}>" if val == "1" else f"</{tag}>"
+        return out
+    t = re.sub(r"\{([^}]*)\}", repl, t)
+    return t
+
+
+def _ass_cues(text: str) -> list[tuple[int, int, str]]:
+    fields: list[str] = []
+    in_events = False
+    out = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        ls = line.strip()
+        if ls.startswith("["):
+            in_events = ls.lower() == "[events]"
+            continue
+        if not in_events:
+            continue
+        if ls.lower().startswith("format:"):
+            fields = [f.strip().lower() for f in ls[7:].split(",")]
+        elif ls.lower().startswith("dialogue:") and fields:
+            parts = ls[9:].lstrip().split(",", len(fields) - 1)
+            if len(parts) < len(fields):
+                continue
+            d = dict(zip(fields, parts))
+            try:
+                s, e = _ass_ms(d["start"]), _ass_ms(d["end"])
+            except (KeyError, ValueError):
+                continue
+            raw = d.get("text", "")
+            if re.search(r"\{[^}]*\\p[1-9]", raw):        # desenhos vetoriais (karaoke/efeitos), não são texto
+                out.append((s, e, ""))
+                continue
+            out.append((s, e, _ass_text_to_srt(raw).strip()))
+    return out
+
+
+def _ass_ms(s: str) -> int:
+    m = re.match(r"(\d+):(\d{2}):(\d{2})[.](\d{1,2})", s.strip())
+    if not m:
+        raise ValueError(s)
+    return ((int(m.group(1)) * 60 + int(m.group(2))) * 60 + int(m.group(3))) * 1000 + int(m.group(4).ljust(2, "0")[:2]) * 10
+
+
+_VTT_ARROW = re.compile(r"^\s*((?:\d{1,3}:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d{1,3}:)?\d{1,2}:\d{2}[.,]\d{1,3})")
+
+
+def _vtt_ms(s: str) -> int:
+    parts = s.strip().replace(",", ".").split(":")
+    sec = float(parts[-1])
+    mins = int(parts[-2])
+    hrs = int(parts[-3]) if len(parts) > 2 else 0
+    return int(round(((hrs * 60 + mins) * 60 + sec) * 1000))
+
+
+def _vtt_clean(t: str) -> str:
+    t = re.sub(r"<\d{1,3}:\d{2}[:.]\d{2,3}(?:[.]\d{1,3})?>", "", t)            # timestamps inline (karaoke)
+    t = re.sub(r"<(/?)([ibu])>", r"<\1\2>", t)
+    t = re.sub(r"</?(?:c|v|lang|ruby|rt|rp)(?:[.\s][^>]*)?>", "", t)
+    t = t.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    return t.strip()
+
+
+def _vtt_cues(text: str) -> list[tuple[int, int, str]]:
+    out = []
+    for b in re.split(r"\n\s*\n", text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")):
+        lines = b.split("\n")
+        if lines[0].strip().upper().startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            continue
+        for i, ln in enumerate(lines[:2]):                                   # linha 0 pode ser o identificador do cue
+            m = _VTT_ARROW.match(ln)
+            if m:
+                try:
+                    out.append((_vtt_ms(m.group(1)), _vtt_ms(m.group(2)), _vtt_clean("\n".join(lines[i + 1:]))))
+                except ValueError:
+                    pass
+                break
+    return out
+
+
+def _srt_cues_raw(text: str) -> list[tuple[int, int, str]]:
+    out = []
+    for b in re.split(r"\n\s*\n", text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")):
+        m = TS_LINE.search(b)
+        if m:
+            out.append((_to_ms(m.group("a")), _to_ms(m.group("b")), b[m.end():].strip("\n")))
+    return out
+
+
+def cues_to_srt(cues: list[tuple[int, int, str]], crlf: bool = False) -> str:
+    rows = []
+    for s, e, t in cues:
+        if t.strip() and e >= s:
+            rows.append((s, e, t))
+    rows.sort(key=lambda c: c[0])
+    blocks = [f"{i}\n{_fmt(s)} --> {_fmt(e)}\n{t}\n" for i, (s, e, t) in enumerate(rows, 1)]
+    res = "\n".join(blocks)
+    return res.replace("\n", "\r\n") if crlf else res
+
+
+def plan_convert(data: bytes, ext: str, opts: dict | None = None) -> dict:
+    """Prepara a conversão para SRT em UTF-8 (sem BOM). Não escreve nada.
+    Devolve texto novo, descrição das alterações e a lista de (início, fim) esperada, para verificação."""
+    opts = opts or {}
+    ext = ext.lower()
+    if ext not in TEXT_EXTS:
+        raise ToolError("Só legendas de texto (SRT, ASS, SSA, VTT) podem ser convertidas.", 422)
+    from .subtitles.parser import sniff_format
+    text, enc = decode_bytes(data)
+    bom = data.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"))
+    replacement = text.count("�")
+    fmt = sniff_format(text, ext) or ext.lstrip(".")
+    if fmt not in ("srt", "vtt", "ass", "ssa"):
+        raise ToolError("Formato não reconhecido.", 422)
+    moji = 0
+    if opts.get("fix_mojibake", True):
+        text, moji = fix_mojibake(text.replace("\r\n", "\n"))
+    crlf = b"\r\n" in data
+    if fmt in ("ass", "ssa"):
+        cues = _ass_cues(text)
+    elif fmt == "vtt":
+        cues = _vtt_cues(text)
+    else:
+        cues = _srt_cues_raw(text)
+    kept = [(s, e, t) for s, e, t in cues if t.strip() and e >= s]
+    if not kept:
+        raise ToolError("Não foi possível extrair falas desta legenda.", 422)
+    if fmt == "srt":
+        new_text = text.replace("\n", "\r\n") if crlf else text
+        if not new_text.endswith("\n"):
+            new_text += "\r\n" if crlf else "\n"
+    else:
+        new_text = cues_to_srt(kept, crlf)
+    changes = []
+    if fmt != "srt":
+        changes.append(f"{fmt.upper()} → SRT")
+    if enc != "utf-8" or bom:
+        changes.append(f"codificação {enc}{' com BOM' if bom else ''} → UTF-8 sem BOM")
+    if moji:
+        changes.append(f"{moji} linhas com acentos partidos reparadas")
+    if fmt == "srt" and not changes:
+        raise ToolError("Nada a alterar: já é SRT em UTF-8 sem BOM e sem acentos partidos.", 422)
+    warnings = []
+    if replacement:
+        warnings.append(f"Contém {replacement} caracteres inválidos (�) que não se podem recuperar; é preciso uma legenda nova.")
+    if fmt != "srt":
+        if len(cues) != len(kept):
+            warnings.append(f"{len(cues) - len(kept)} eventos sem texto (efeitos/desenhos) não passam para o SRT.")
+        warnings.append("Posições e estilos (cores, fontes, \\pos) perdem-se; ficam só itálico, negrito e sublinhado.")
+    return {"fmt": fmt, "enc": enc, "bom": bom, "new_text": new_text, "expected": [(s, e) for s, e, _ in sorted(kept, key=lambda c: c[0])] if fmt != "srt" else [(s, e) for s, e, _ in cues],
+            "cues": len(kept), "dropped": len(cues) - len(kept), "moji": moji, "changes": changes, "warnings": warnings,
+            "samples": [{"n": i + 1, "start": s, "end": e, "text": t[:90]} for i, (s, e, t) in enumerate(sorted(kept, key=lambda c: c[0])[:8])]}
+
+
+def convert_target(path: str, fmt: str) -> str:
+    """Caminho de saída: mesmo nome com extensão .srt (mantém o código de idioma do nome)."""
+    return os.path.splitext(path)[0] + ".srt"

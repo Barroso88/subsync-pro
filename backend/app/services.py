@@ -995,9 +995,64 @@ class App:
                 "changes": changes, "warnings": ([f"{stats['dropped']} falas ficam vazias e serão removidas."] if stats["dropped"] else []) +
                 (["«Maiúsculas→frase» perde a capitalização de nomes próprios (reveja a pré-visualização)."] if stats["uppercase"] else [])}
 
+    def _convert_plan(self, sid: int, params: dict):
+        sub = self._sub(sid)
+        real, data = self._read_editable(sub, any_ext=True)
+        ext = os.path.splitext(real)[1].lower()
+        try:
+            plan = st.plan_convert(data, ext, params)
+        except st.ToolError as e:
+            raise ServiceError(str(e), e.status)
+        target = real if plan["fmt"] == "srt" and ext == ".srt" else st.convert_target(real, plan["fmt"])
+        if target != real:
+            try:
+                require_within(target, self.writable_roots())
+            except PathSecurityError:
+                raise ServiceError("O destino não está numa biblioteca com escrita ativa.", 403)
+            if os.path.lexists(target):
+                raise ServiceError(f"Já existe {os.path.basename(target)}; não é substituído. Mova-o para backup primeiro.", 409)
+        new = parse_srt(plan["new_text"])
+        if [(c.start_ms, c.end_ms) for c in new.cues] != plan["expected"]:
+            raise ServiceError("Verificação falhou: os tempos não coincidem com o original. Nada foi alterado.", 500)
+        return sub, real, data, target, plan
+
+    def _convert_preview(self, sid: int, params: dict) -> dict:
+        sub, real, data, target, plan = self._convert_plan(sid, params)
+        keep = bool(params.get("keep_original"))
+        return {"kind": "convert", "summary": f"{os.path.basename(real)} → {os.path.basename(target)}: " + "; ".join(plan["changes"]) + ".",
+                "base_hash": st.sha1(data), "name": os.path.basename(real), "target": os.path.basename(target), "encoding": plan["enc"], "bom": plan["bom"],
+                "format": plan["fmt"], "cues": plan["cues"], "dropped": plan["dropped"], "samples": plan["samples"], "moji": plan["moji"],
+                "warnings": plan["warnings"] + ([f"O original {os.path.basename(real)} será movido para backup (restaurável)."] if target != real and not keep else [])}
+
+    def _convert_apply(self, sid: int, params: dict, base_hash: str) -> dict:
+        sub, real, data, target, plan = self._convert_plan(sid, params)
+        if st.sha1(data) != base_hash:
+            raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)
+        keep = bool(params.get("keep_original"))
+        new_bytes = plan["new_text"].encode("utf-8")
+        backup = self._backup(real, sid)
+        try:
+            st.atomic_replace(target, new_bytes)
+            if target != real and Path(target).read_bytes() != new_bytes:
+                raise OSError(5, "Verificação da escrita falhou")
+            if target != real and not keep:
+                os.unlink(real)
+        except OSError as e:
+            if target != real and os.path.lexists(target) and st.sha1(Path(target).read_bytes()) == st.sha1(new_bytes):
+                os.unlink(target)
+            raise ServiceError(f"Não foi possível escrever: {e.strerror}", 403)
+        if target != real and not keep:
+            self.db.execute("UPDATE subtitles SET present=0 WHERE id=?", (sid,))
+        eid = self._record_edit(sub, "convert", {**params, "output_path": target, "keep_original": keep}, backup, st.sha1(data), st.sha1(new_bytes))
+        add_event(self.db, "edit", f"Legenda convertida ({'; '.join(plan['changes'])}): {os.path.basename(target)} — cópia em backup #{eid}", "info", sub["media_id"])
+        self._rescan_dir(sub)
+        return {"edit_id": eid, "target": os.path.basename(target)}
+
     def sub_preview(self, sid: int, action: str, params: dict) -> dict:
         if action == "textfix":
             return self._text_preview(sid, params)
+        if action == "convert":
+            return self._convert_preview(sid, params)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
         pv = st.build_preview(parsed.cues, fn, sub.get("media_duration"))
         pv.update({"summary": info["summary"], "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc,
@@ -1040,6 +1095,8 @@ class App:
     def sub_apply(self, sid: int, action: str, params: dict, base_hash: str) -> dict:
         if action == "textfix":
             return self._text_apply(sid, params, base_hash)
+        if action == "convert":
+            return self._convert_apply(sid, params, base_hash)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
         if st.sha1(data) != base_hash:
             raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)
@@ -1101,6 +1158,25 @@ class App:
         if not os.access(os.path.dirname(real), os.W_OK):
             raise ServiceError("Sem permissão de escrita na pasta.", 403)
         backup_bytes = Path(e["backup_path"]).read_bytes()
+        out_path = (jloads(e["params"], {}) or {}).get("output_path") if e["action"] == "convert" else None
+        if out_path and out_path != e["path"]:
+            # conversão para outro ficheiro: remove o .srt criado (se ainda for o nosso) e repõe o original
+            try:
+                outp = require_within(out_path, self.writable_roots())
+            except PathSecurityError:
+                raise ServiceError("O destino não está numa biblioteca com escrita ativa.", 403)
+            if os.path.lexists(outp) and st.sha1(Path(outp).read_bytes()) != e["after_hash"] and not force:
+                raise ServiceError("O ficheiro convertido foi alterado depois desta edição. Restaurar remove-o (use «forçar»).", 409)
+            if os.path.lexists(real) and st.sha1(Path(real).read_bytes()) != st.sha1(backup_bytes) and not force:
+                raise ServiceError("Já existe um ficheiro com este nome; não é substituído.", 409)
+            if os.path.lexists(outp):
+                os.unlink(outp)
+            if not os.path.lexists(real) or st.sha1(Path(real).read_bytes()) != st.sha1(backup_bytes):
+                st.atomic_replace(real, backup_bytes)
+            self.db.execute("UPDATE subtitle_edits SET restored_at=? WHERE id=?", (now(), eid))
+            add_event(self.db, "edit", f"Conversão revertida: {os.path.basename(real)} (#{eid})", "info", e["media_id"])
+            self._rescan_dir({"library_id": e["library_id"], "path": real})
+            return {"restored": True}
         if e["action"] == "delete":
             if os.path.lexists(real):
                 raise ServiceError("Já existe um ficheiro com este nome; não é substituído.", 409)

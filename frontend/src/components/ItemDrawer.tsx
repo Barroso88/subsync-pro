@@ -104,7 +104,7 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
           )}
         </div>
       ))}
-      <SubToolsModal sub={tools ? { id: tools.id, name: baseName(tools.path), lang: tools.lang, canEdit: d.library_writable, isSrt: tools.path.toLowerCase().endsWith(".srt") } : null} onClose={() => setTools(null)} />
+      <SubToolsModal sub={tools ? { id: tools.id, name: baseName(tools.path), lang: tools.lang, canEdit: d.library_writable, isSrt: tools.path.toLowerCase().endsWith(".srt"), isText: /\.(srt|ass|ssa|vtt)$/i.test(tools.path) } : null} onClose={() => setTools(null)} />
     </div>
   );
 }
