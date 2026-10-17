@@ -745,6 +745,7 @@ class App:
         """Radarr/Sonarr avisam que importaram um ficheiro: analisa só essa pasta e (se ativo) procura a legenda."""
         ev = str(payload.get("eventType", ""))
         if ev == "Test":
+            add_event(self.db, "webhook", f"{source.title()}: teste de webhook recebido (ligação e token OK).", "info")
             return {"ok": True, "test": True}
         if ev not in ("Download", "MovieFileImported", "Upgrade", "EpisodeFileImported"):
             return {"ok": True, "ignored": ev or "sem eventType"}
