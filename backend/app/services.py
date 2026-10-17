@@ -188,6 +188,26 @@ class App:
         res = {"updated": 0}
         lookup = {r["path"]: r["id"] for r in self.db.query("SELECT id,path FROM media_items WHERE present=1")}
 
+        def set_poster(mid: int, new: str | None, source: str) -> None:
+            """Capa do Plex tem prioridade; as restantes ficam como alternativa. Muda a ordem => limpa a cache."""
+            if not new:
+                return
+            cur = self.db.one("SELECT poster FROM media_items WHERE id=?", (mid,))
+            old = (cur["poster"] or "") if cur else ""
+            plex_ref = next((r for r in old.split("|") if r.startswith("plex:")), None)
+            if source == "plex":
+                rest = [r for r in old.split("|") if r and not r.startswith("plex:")]
+                final = "|".join([new] + rest)
+            else:
+                final = "|".join(([plex_ref] if plex_ref else []) + [r for r in new.split("|") if r])
+            if final != old:
+                self.db.execute("UPDATE media_items SET poster=? WHERE id=?", (final, mid))
+                for suffix in (".img", ".type"):
+                    try:
+                        (self.cfg.poster_dir / f"{mid}{suffix}").unlink()
+                    except OSError:
+                        pass
+
         def upd(path, **cols):
             mid = lookup.get(path)
             if not mid:
@@ -208,17 +228,20 @@ class App:
             try:
                 if name == "radarr":
                     for m in svc.movies():
-                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], poster=m["poster"], year=m["year"])
+                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"])
+                        if lookup.get(m["path"]):
+                            set_poster(lookup[m["path"]], m["poster"], "arr")
                 elif name == "sonarr":
                     for e in svc.episodes():
-                        upd(e["path"], imdb_id=e["imdb_id"], tmdb_id=e["tmdb_id"], tvdb_id=e["tvdb_id"], poster=e["poster"],
-                            episode_title=e["episode_title"])
+                        upd(e["path"], imdb_id=e["imdb_id"], tmdb_id=e["tmdb_id"], tvdb_id=e["tvdb_id"], episode_title=e["episode_title"])
+                        if lookup.get(e["path"]):
+                            set_poster(lookup[e["path"]], e["poster"], "arr")
                 else:
                     for it in svc.items():
                         mid = lookup.get(it["path"])
                         if mid:
-                            cur = self.db.one("SELECT poster FROM media_items WHERE id=?", (mid,))
-                            upd(it["path"], plex_key=it["rating_key"], poster=None if cur and cur["poster"] else it["poster"])
+                            upd(it["path"], plex_key=it["rating_key"])
+                            set_poster(mid, it["poster"], "plex")
             except IntegrationError as e:
                 errors.append(f"{name}: {e}")
         if errors:
@@ -253,8 +276,7 @@ class App:
             return cache.read_bytes(), ctype_file.read_text() if ctype_file.exists() else "image/jpeg"
         from .integrations.common import fetch_public_image
         errors: list[str] = []
-        refs = sorted(str(m["poster"]).split("|"), key=lambda r: not r.startswith("https://"))
-        for ref in refs:
+        for ref in str(m["poster"]).split("|"):          # ordem guardada: Plex → público → Radarr/Sonarr
             try:
                 if ref.startswith("plex:"):
                     rel = ref[5:]

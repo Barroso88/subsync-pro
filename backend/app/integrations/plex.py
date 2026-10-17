@@ -58,5 +58,12 @@ class Plex:
         self._req("PUT", f"/library/metadata/{rating_key}/refresh")
 
     def fetch_image(self, rel: str) -> tuple[bytes, str]:
+        """Capa em tamanho reduzido (transcodificador de fotos do Plex); se falhar, a original."""
+        try:
+            r = self._req("GET", "/photo/:/transcode", width=342, height=513, minSize=1, upscale=0, url=rel)
+            if r.headers.get("content-type", "").startswith("image/") and r.content:
+                return r.content, r.headers["content-type"]
+        except IntegrationError:
+            pass
         r = self._req("GET", rel)
         return r.content, r.headers.get("content-type", "image/jpeg")

@@ -34,16 +34,16 @@ class Arr:
         return {"ok": True, "version": j.get("version"), "app": j.get("appName")}
 
     def _poster(self, images: list[dict]) -> str | None:
-        """`arr:<kind>:<caminho local>` e, se existir, `|<URL público TMDb/TVDB>` como alternativa."""
+        """URL público TMDb/TVDB primeiro (rápido, sem autenticação) e, como alternativa, `arr:<kind>:<caminho local>`."""
         for i in images or []:
             if i.get("coverType") == "poster":
                 local = i.get("url") or ""
                 remote = i.get("remoteUrl") or ""
                 parts = []
-                if local.startswith("/"):
-                    parts.append(f"arr:{self.kind}:{local}")
                 if remote.startswith("https://") and public_image_host_ok(remote):
                     parts.append(remote.replace("/original/", "/w342/"))
+                if local.startswith("/"):
+                    parts.append(f"arr:{self.kind}:{local}")
                 return "|".join(parts) or None
         return None
 
