@@ -199,6 +199,7 @@ def test_embedded_generic_pt_refined_by_extracted_text(core, media_root, monkeyp
     texts = {3: make_srt(60, pool=PT_PT), 4: make_srt(60, pool=PT_BR_TEXT)}
     calls = []
     monkeypatch.setattr(fp, "extract_subtitle_text", lambda path, idx, b="ffmpeg", timeout=300: (calls.append(idx), texts[idx].encode())[1])
+    core.settings.set("embedded_variant_scan", True)
     add_libs(core, media_root)
     wait_job(core, core.start_scan(None))
     mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
@@ -236,3 +237,16 @@ def test_generic_pt_variant_policy_only_covers_chosen_and_skips_extraction(core,
     core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}])
     c = cov.compute(core.db, core.settings, [mid])[mid]
     assert c["missing"] == ["pt-BR"] and c["fallback"] == {"pt-PT": "pt"}      # só cobre a variante escolhida
+
+
+def test_videos_are_never_opened_by_default(core, media_root, monkeypatch):
+    from app import ffprobe as fp
+    calls = []
+    monkeypatch.setattr(fp, "probe", lambda path, b="ffprobe", timeout=60: fp.ProbeResult(
+        True, 3600.0, "h264", 1920, 1080, 24.0, [fp.EmbeddedSub(3, "subrip", "pt", "por", None, False, False, True)]))
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: calls.append(a) or None)
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    wait_job(core, core.jobs.submit("revalidate", "r", {}))          # «Reclassificar legendas»
+    wait_job(core, core.start_scan(None, force_subs=True))
+    assert calls == []                                               # por omissão nenhum vídeo é lido pelo ffmpeg

@@ -31,6 +31,7 @@ DEFAULTS: dict[str, Any] = {
                   "requests_per_minute": 20, "daily_download_limit": 50},
     },
     "generic_pt_variant": "",          # "" = «pt» sem variante não conta | "pt-PT" | "pt-BR": variante assumida para «pt» genérico (assinalada ≈pt)
+    "embedded_variant_scan": False,    # LENTO: abre os vídeos (ffmpeg) para estimar pt-PT/pt-BR de faixas embutidas «pt». Só se ativado.
     "accept_pt_br_fallback": False,   # se faltar pt-PT, aceitar pt-BR (instalada como pt-BR, nunca renomeada)
     "translation": {
         "enabled": False,                  # permite o botão «Traduzir» nos resultados

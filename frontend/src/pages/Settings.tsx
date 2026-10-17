@@ -85,6 +85,9 @@ export default function SettingsPage() {
 
         <Section title="Scanner" hint="Reanálise incremental: só ficheiros novos ou alterados são processados de novo."
           actions={<RevalidateButton />}>
+          <div className="mb-5"><Toggle checked={!!d.embedded_variant_scan} onChange={(v) => set("embedded_variant_scan", v)} disabled={!!d.generic_pt_variant}
+            label="Ler o texto das legendas embutidas «pt» para estimar pt-PT/pt-BR (LENTO)"
+            hint={d.generic_pt_variant ? "Desativado enquanto «pt» sem variante estiver a ser assumido (Definições → Idiomas)." : "Abre e lê quase todo o vídeo (ffmpeg) em cada ficheiro afetado: intenso em disco/rede. Desligado por omissão; sem isto a app nunca lê o conteúdo dos vídeos para além do FFprobe."} /></div>
           <Field label="Intervalo da análise agendada (minutos)" hint="0 = apenas manual. O número máximo de tarefas simultâneas define-se por variável de ambiente (SUBSYNC_MAX_JOBS).">
             <input className="input max-w-[200px]" type="number" min={0} value={d.scan_interval_minutes} onChange={(e) => set("scan_interval_minutes", Number(e.target.value))} />
           </Field>

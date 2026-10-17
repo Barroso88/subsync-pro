@@ -186,7 +186,7 @@ class Scanner:
         targets = {(sp, mid) for sp, mid in to_probe}
         if force_subs:
             targets |= set(media_by_path.items())
-        if targets and self.ffprobe_ok and not self.settings.get("generic_pt_variant"):   # com variante assumida não vale a pena ler os vídeos
+        if targets and self.ffprobe_ok and self.settings.get("embedded_variant_scan") and not self.settings.get("generic_pt_variant"):   # opt-in explícito: lê os vídeos
             list(pool.map(lambda t: self.refine_embedded_pt(t[0], t[1]), sorted(targets)))
         # 3) legendas externas
         all_vids = list(videos)

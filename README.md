@@ -85,6 +85,10 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 - Contentor: sem `privileged`, sem socket Docker, `cap_drop: ALL`, `no-new-privileges`, rootfs só de leitura, utilizador não-root.
 - **Não exponha a porta à Internet.** Sem proxy reverso com TLS, a palavra-passe viaja em claro na LAN.
 
+## Leitura dos vídeos
+
+Por omissão a app só abre os vídeos com o FFprobe (metadados e lista de faixas, leitura mínima). **Nunca** lê o conteúdo completo dos vídeos, nem em «Reclassificar legendas». Só se ativar explicitamente *Definições → Scanner → Ler o texto das legendas embutidas «pt»* é que o ffmpeg extrai essas faixas (lê quase todo o ficheiro). Alternativa barata: *Definições → Idiomas → Legendas «pt» sem variante → Assumir pt-PT*.
+
 ## Tradução automática (DeepL)
 
 Desligada por omissão (Definições → Idiomas). Quando não há legenda no idioma pedido, o botão **Traduzir** descarrega uma legenda noutro idioma e traduz o texto, **mantendo os tempos originais**. Notas:
