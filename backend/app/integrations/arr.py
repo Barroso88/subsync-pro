@@ -55,7 +55,8 @@ class Arr:
             if not path:
                 continue
             out.append({"id": m.get("id"), "path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
-                        "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images"))})
+                        "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images")),
+                        "added": mf.get("dateAdded") or m.get("added")})
         return out
 
     def episodes(self) -> list[dict]:
@@ -71,7 +72,7 @@ class Arr:
                 out.append({"path": map_remote_to_local(f["path"], self.mappings), "series_title": s.get("title"),
                             "year": s.get("year"), "season": e.get("seasonNumber"), "episode": e.get("episodeNumber"),
                             "episode_title": e.get("title"), "imdb_id": s.get("imdbId"), "tmdb_id": s.get("tmdbId"),
-                            "tvdb_id": s.get("tvdbId"), "poster": poster})
+                            "tvdb_id": s.get("tvdbId"), "poster": poster, "added": f.get("dateAdded")})
         return out
 
     def fetch_image(self, rel: str) -> tuple[bytes, str]:

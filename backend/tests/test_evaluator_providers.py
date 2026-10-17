@@ -228,7 +228,7 @@ def test_radarr_and_plex_parsing():
     maps = [{"remote": "/movies", "local": "/media/Filmes"}]
     m = Arr("radarr", "http://r", "K", maps, t, validate=False).movies()
     assert m == [{"id": None, "path": "/media/Filmes/F (2024)/F (2024).mkv", "title": "F", "year": 2024, "imdb_id": "tt1", "tmdb_id": 5,
-                  "poster": "arr:radarr:/MediaCover/1/poster.jpg"}]
+                  "poster": "arr:radarr:/MediaCover/1/poster.jpg", "added": None}]
     it = Plex("http://p", "T", maps, t, validate=False).items()
     assert it[0]["rating_key"] == "42" and it[0]["path"] == "/media/Filmes/F (2024)/F (2024).mkv"
 

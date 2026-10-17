@@ -137,3 +137,5 @@ Desligada por omissão (Definições → Idiomas). Quando não há legenda no id
 - Os posters dependem de Plex ou Radarr/Sonarr; sem eles aparece um placeholder.
 - Sem suporte a numeração absoluta de anime nem a vários episódios por ficheiro (é usado o primeiro).
 - SQLite apenas (migração para PostgreSQL exigiria adaptar `db.py`).
+
+- **Ordenar por data de adição** (Filmes e Legendas em falta): «Adicionados recentemente» / «há mais tempo». A data vem do Plex (quando entrou na biblioteca), senão do Radarr/Sonarr (data de importação do ficheiro), senão da data de modificação do ficheiro. Corra «Sincronizar metadados» para preencher as datas do Plex/Radarr/Sonarr.

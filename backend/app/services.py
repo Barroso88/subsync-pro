@@ -237,19 +237,19 @@ class App:
             try:
                 if name == "radarr":
                     for m in svc.movies():
-                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"))
+                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"), added_at=m.get("added"))
                         if lookup.get(m["path"]):
                             set_poster(lookup[m["path"]], m["poster"], "arr")
                 elif name == "sonarr":
                     for e in svc.episodes():
-                        upd(e["path"], imdb_id=e["imdb_id"], tmdb_id=e["tmdb_id"], tvdb_id=e["tvdb_id"], episode_title=e["episode_title"])
+                        upd(e["path"], imdb_id=e["imdb_id"], tmdb_id=e["tmdb_id"], tvdb_id=e["tvdb_id"], episode_title=e["episode_title"], added_at=e.get("added"))
                         if lookup.get(e["path"]):
                             set_poster(lookup[e["path"]], e["poster"], "arr")
                 else:
                     for it in svc.items():
                         mid = lookup.get(it["path"])
                         if mid:
-                            upd(it["path"], plex_key=it["rating_key"])
+                            upd(it["path"], plex_key=it["rating_key"], added_at=it.get("added"))
                             set_poster(mid, it["poster"], "plex")
             except IntegrationError as e:
                 errors.append(f"{name}: {e}")

@@ -48,16 +48,18 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
   const dq = useDebounced(q);
   const [lang, setLang] = useState(initialLang);
   const [status, setStatus] = useState(defaultStatus);
+  const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem("media-sort") || "title"; } catch { return "title"; } });
+  useEffect(() => { try { localStorage.setItem("media-sort", sort); } catch { /* sem armazenamento */ } }, [sort]);
   const [view, setView] = useState<"grid" | "table">(allowGrid ? ((localStorage.getItem("view") as any) || "grid") : "table");
   const [page, setPage] = useState(0);
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [open, setOpen] = useState<number | null>(null);
   const [batch, setBatch] = useState(false);
   const limit = view === "grid" ? 48 : 50;
-  useEffect(() => setPage(0), [dq, lang, status, view, kind]);
+  useEffect(() => setPage(0), [dq, lang, status, view, kind, sort]);
   useEffect(() => { if (allowGrid) localStorage.setItem("view", view); }, [view, allowGrid]);
 
-  const params = { kind, q: dq, lang, status, limit, offset: page * limit };
+  const params = { kind, q: dq, lang, status, sort, limit, offset: page * limit };
   const list = useQuery({ queryKey: ["media", params], queryFn: () => api.get<{ total: number; items: Item[] }>("/media" + qs(params)), placeholderData: keepPreviousData });
   const langs: string[] = settings.data?.languages.map((l: any) => l.code) ?? [];
   const items = list.data?.items ?? [];
@@ -81,6 +83,9 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
         </select>}
         {!missingMode && <Tabs value={status} onChange={setStatus} items={STATUS.map((s) => ({ id: s.id, label: s.label }))} />}
         <div className="ml-auto flex items-center gap-2">
+          <select className="input !w-auto" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Ordenar por">
+            <option value="title">Ordem alfabética</option><option value="added">Adicionados recentemente</option><option value="added_old">Adicionados há mais tempo</option><option value="year">Ano (mais recente)</option>
+          </select>
           <span className="text-xs text-dim tabular-nums">{total} {total === 1 ? "item" : "itens"}</span>
           {allowGrid && (
             <div className="inline-flex p-0.5 rounded-lg bg-s2 border border-line">
@@ -143,7 +148,7 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
           <table className="w-full min-w-[720px]">
             <thead className="border-b border-line"><tr>
               <th className="th w-9"><Checkbox checked={allOnPage} onChange={(v) => setSel((s) => { const n = new Set(s); items.forEach((i) => v ? n.add(i.id) : n.delete(i.id)); return n; })} label="Selecionar página" /></th>
-              <th className="th">{kind === "movie" ? "Filme" : "Episódio"}</th><th className="th hidden md:table-cell">Duração</th><th className="th">Legendas</th><th className="th hidden lg:table-cell">Estado</th>
+              <th className="th">{kind === "movie" ? "Filme" : "Episódio"}</th><th className="th hidden md:table-cell">Duração</th><th className="th hidden md:table-cell">Adicionado</th><th className="th">Legendas</th><th className="th hidden lg:table-cell">Estado</th>
             </tr></thead>
             <tbody>
               {items.map((i) => (
@@ -154,6 +159,7 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
                     <div className="text-xs text-dim truncate max-w-[360px]">{i.file_name}</div>
                   </td>
                   <td className="td hidden md:table-cell text-mute tabular-nums">{fmtDur(i.duration)}</td>
+                  <td className="td hidden md:table-cell text-mute tabular-nums text-xs">{i.added_at ? new Date(i.added_at).toLocaleDateString("pt-PT", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
                   <td className="td"><LangChips item={i} /></td>
                   <td className="td hidden lg:table-cell">
                     <div className="flex gap-1 flex-wrap">

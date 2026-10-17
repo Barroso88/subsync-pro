@@ -1,6 +1,8 @@
 """Plex: metadados, correspondência de itens e refresh após instalar legendas."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 
 from .common import IntegrationError, client, map_remote_to_local, validate_service_url
@@ -50,6 +52,7 @@ class Plex:
                         out.append({
                             "path": map_remote_to_local(part["file"], self.mappings), "rating_key": str(m.get("ratingKey")),
                             "title": m.get("grandparentTitle") or m.get("title"),
+                            "added": datetime.fromtimestamp(int(m["addedAt"]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if m.get("addedAt") else None,
                             "poster": f"plex:{m.get('grandparentThumb') or m.get('thumb')}" if (m.get("grandparentThumb") or m.get("thumb")) else None,
                         })
         return out

@@ -36,7 +36,7 @@ export interface Item {
   season: number | null; episode: number | null; episode_title: string | null; file_name: string; path: string;
   duration: number | null; width: number | null; height: number | null; video_codec: string | null; fps: number | null;
   has_poster: boolean; fallback?: Record<string, string>; covered: Record<string, "external" | "embedded">; missing: string[];
-  n_external: number; n_embedded: number; suspect: boolean; unverified: boolean; unknown_lang: number; library_id: number; radarr_id?: number | null; file_title?: string | null;
+  n_external: number; n_embedded: number; suspect: boolean; unverified: boolean; unknown_lang: number; library_id: number; added_at?: string | null; radarr_id?: number | null; file_title?: string | null;
 }
 export interface Issue { code: string; severity: "info" | "warning" | "error"; message: string }
 export interface Sub {
