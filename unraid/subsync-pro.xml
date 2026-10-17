@@ -8,6 +8,7 @@
   <Support>https://github.com/Barroso88/subsync-pro/issues</Support>
   <Project>https://github.com/Barroso88/subsync-pro</Project>
   <Overview>Gestor self-hosted de legendas para Plex/Radarr/Sonarr: inventaria filmes e séries, deteta idiomas em falta (externas e embutidas), pesquisa no OpenSubtitles/SubDL, avalia a compatibilidade de forma honesta e instala as legendas com segurança. Nunca altera vídeos nem substitui legendas sem confirmação.</Overview>
+  <Icon>https://raw.githubusercontent.com/Barroso88/subsync-pro/main/unraid/icon.png</Icon>
   <Category>MediaApp:Video Tools:</Category>
   <WebUI>http://[IP]:[PORT:8484]/</WebUI>
   <ExtraParams>--user 99:100 --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /tmp --memory 1g --cpus 2</ExtraParams>
