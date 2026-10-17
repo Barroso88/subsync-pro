@@ -1,0 +1,44 @@
+services:
+  subsync:
+    build: .
+    image: subsync-pro:latest
+    container_name: subsync-pro
+    restart: unless-stopped
+    # Unraid: nobody:users = 99:100. Ajuste para o UID/GID que o Plex usa nas suas shares.
+    user: "${PUID:-99}:${PGID:-100}"
+    ports:
+      - "${WEB_PORT:-8484}:8484"
+    environment:
+      TZ: ${TZ:-Europe/Lisbon}
+      SUBSYNC_ALLOWED_ROOTS: /media
+      SUBSYNC_MAX_JOBS: ${SUBSYNC_MAX_JOBS:-2}
+      SUBSYNC_AUTH_PASSWORD: ${SUBSYNC_AUTH_PASSWORD:-}
+      SUBSYNC_LOG_LEVEL: ${SUBSYNC_LOG_LEVEL:-INFO}
+      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
+      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
+      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
+      SUBDL_API_KEY: ${SUBDL_API_KEY:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+    volumes:
+      # Configuração, base de dados, logs, staging e cópias de segurança
+      - ${CONFIG_DIR:-./config}:/data
+      # Bibliotecas. Use :ro nas que NÃO quer que a app possa escrever; as restantes precisam de rw
+      # para guardar legendas (a app só escreve se ativar «escrita» na biblioteca).
+      - ${MOVIES_DIR:-/mnt/user/Filmes}:/media/Filmes
+      - ${SERIES_DIR:-/mnt/user/Séries}:/media/Séries
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: ${MEM_LIMIT:-1g}
+    cpus: ${CPU_LIMIT:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8484/api/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

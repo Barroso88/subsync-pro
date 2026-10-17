@@ -1,0 +1,156 @@
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+
+from app import coverage as cov
+from app.scanner import ScanAborted, associate
+from tests.conftest import make_srt, wait_job
+
+
+def add_libs(core, root):
+    a = core.add_library("Filmes", "movies", str(root / "Filmes"), True)
+    b = core.add_library("Séries", "series", str(root / "Séries"), False)
+    return a, b
+
+
+def test_scan_finds_media_and_subs(core, media_root):
+    add_libs(core, media_root)
+    jid = core.start_scan(None)
+    j = wait_job(core, jid)
+    assert j["status"] == "done", j
+    assert core.db.scalar("SELECT COUNT(*) FROM media_items WHERE kind='movie'") == 1
+    assert core.db.scalar("SELECT COUNT(*) FROM media_items WHERE kind='episode'") == 2
+    ext = core.db.query("SELECT * FROM subtitles WHERE kind='external'")
+    assert {(s["lang"], s["lang_source"]) for s in ext} == {("en", "filename"), ("pt-PT", "filename")}
+    emb = core.db.query("SELECT * FROM subtitles WHERE kind='embedded'")
+    assert len(emb) == 1 and emb[0]["lang"] == "en"
+    movie = core.db.one("SELECT * FROM media_items WHERE kind='movie'")
+    assert movie["duration"] == 3700.0 and movie["title"] == "Filme Teste" and movie["year"] == 2024
+
+
+def test_incremental_scan_skips_unchanged(core, media_root, fake_probe):
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    n = len(fake_probe)
+    wait_job(core, core.start_scan(None))
+    assert len(fake_probe) == n                      # nada reanalisado
+    # alterar um ficheiro -> só esse volta ao ffprobe
+    v = media_root / "Filmes" / "Filme Teste (2024)" / "Filme Teste (2024).mkv"
+    v.write_bytes(b"\3" * 300_000)
+    os.utime(v, (v.stat().st_atime, v.stat().st_mtime + 10))
+    wait_job(core, core.start_scan(None))
+    assert len(fake_probe) == n + 1
+
+
+def test_removed_files_marked_not_deleted(core, media_root):
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    (media_root / "Séries" / "Minha Série" / "Season 01" / "Minha Série - S01E02.mkv").unlink()
+    wait_job(core, core.start_scan(None))
+    assert core.db.scalar("SELECT COUNT(*) FROM media_items WHERE present=0") == 1
+    assert core.db.scalar("SELECT COUNT(*) FROM media_items") == 3
+
+
+def test_unmounted_share_does_not_wipe_inventory(core, media_root, tmp_path):
+    # >5 itens para ativar a salvaguarda
+    d = media_root / "Filmes"
+    for i in range(8):
+        (d / f"Outro {i} (2020)").mkdir()
+        (d / f"Outro {i} (2020)" / f"Outro {i} (2020).mkv").write_bytes(b"x" * 1000)
+    a, _ = add_libs(core, media_root)
+    wait_job(core, core.start_scan(a))
+    for p in list(d.iterdir()):
+        shutil.rmtree(p)           # simula share vazia mas montada
+    j = wait_job(core, core.start_scan(a))
+    assert j["status"] == "failed"
+    assert core.db.scalar("SELECT COUNT(*) FROM media_items WHERE present=1") >= 9
+
+
+def test_scan_never_modifies_media(core, media_root):
+    before = {p: (p.stat().st_size, p.stat().st_mtime) for p in media_root.rglob("*") if p.is_file()}
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    after = {p: (p.stat().st_size, p.stat().st_mtime) for p in media_root.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_coverage_and_embedded_setting(core, media_root):
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}, {"code": "en", "priority": "primary"}])
+    c = cov.compute(core.db, core.settings)
+    by = {core.db.one("SELECT file_name FROM media_items WHERE id=?", (k,))["file_name"]: v for k, v in c.items()}
+    e1, e2, mv = by["Minha Série - S01E01.mkv"], by["Minha Série - S01E02.mkv"], by["Filme Teste (2024).mkv"]
+    assert e1["covered"] == {"pt-PT": "external"} and e1["missing"] == ["en"]
+    assert e2["covered"] == {"en": "embedded"} and e2["missing"] == ["pt-PT"]       # embutida conta
+    assert mv["missing"] == ["pt-PT"]
+    core.settings.set("embedded_counts", False)
+    c = cov.compute(core.db, core.settings)
+    e2id = core.db.one("SELECT id FROM media_items WHERE file_name LIKE '%S01E02%'")["id"]
+    assert c[e2id]["missing"] == ["pt-PT", "en"]
+
+
+def test_generic_pt_does_not_satisfy_pt_pt(core, media_root):
+    d = media_root / "Filmes" / "Filme Teste (2024)"
+    (d / "Filme Teste (2024).pt.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    core.settings.set("languages", [{"code": "pt-PT", "priority": "primary"}])
+    mid = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    assert "pt-PT" in cov.compute(core.db, core.settings, [mid])[mid]["missing"]
+    core.settings.set("languages", [{"code": "pt", "priority": "primary"}])
+    assert cov.compute(core.db, core.settings, [mid])[mid]["missing"] == []
+
+
+def test_problem_detection_on_existing(core, media_root):
+    d = media_root / "Filmes" / "Filme Teste (2024)"
+    (d / "Filme Teste (2024).fr.srt").write_text("", "utf-8")                        # vazia
+    (d / "Filme Teste (2024).de.srt").write_text("isto não é uma legenda", "utf-8")  # inválida
+    (d / "Filme Teste (2024).es.srt").write_text(make_srt(300, 30_000, lang="en"), "utf-8")   # passa do fim + idioma errado
+    (d / "Filme Teste (2024).en.copy.srt").write_text((d / "Filme Teste (2024).en.srt").read_text(), "utf-8")
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    def issues(lang_path):
+        import json
+        r = core.db.one("SELECT * FROM subtitles WHERE path LIKE ?", (f"%{lang_path}",))
+        return r["status"], {i["code"] for i in json.loads(r["issues"])}
+    assert issues(".fr.srt")[0] == "empty"
+    assert issues(".de.srt")[0] == "invalid"
+    st, codes = issues(".es.srt")
+    assert "beyond_video" in codes and "language_mismatch" in codes
+    assert "duplicate" in issues("(2024).en.srt")[1]
+
+
+def test_association_rules():
+    v = [Path("/a/Show.S01E01.mkv"), Path("/a/Show.S01E02.mkv")]
+    assert associate(v, Path("/a/Show.S01E01.en.srt")) == (v[0], "certain")
+    assert associate(v, Path("/a/Outro.nome.S01E02.srt"))[1] == "probable"
+    assert associate(v, Path("/a/random.srt")) == (None, "uncertain")
+    assert associate([v[0]], Path("/a/random.srt")) == (v[0], "probable")
+
+
+def test_subs_folder_is_scanned(core, media_root):
+    d = media_root / "Filmes" / "Filme Teste (2024)"
+    (d / "Subs").mkdir()
+    (d / "Subs" / "Filme Teste (2024).fr.srt").write_text(make_srt(60, lang="en"), "utf-8")
+    add_libs(core, media_root)
+    wait_job(core, core.start_scan(None))
+    assert core.db.scalar("SELECT COUNT(*) FROM subtitles WHERE lang='fr' AND media_id IS NOT NULL") == 1
+
+
+def test_persistence_after_restart(cfg, fake_probe, media_root):
+    from app.services import App
+    a = App(cfg)
+    a.add_library("Filmes", "movies", str(media_root / "Filmes"), True)
+    wait_job(a, a.start_scan(None))
+    a.settings.set("auto_download", True)
+    a.stop()
+    b = App(cfg)
+    try:
+        assert b.db.scalar("SELECT COUNT(*) FROM media_items") == 1
+        assert b.settings.get("auto_download") is True
+        assert len(b.libraries()) == 1
+    finally:
+        b.stop()
