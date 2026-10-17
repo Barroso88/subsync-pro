@@ -614,8 +614,24 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         langs = [l["code"] for l in core.settings.get("languages")]
         return {"missing": sum(1 for v in covs.values() if v["missing"]),
                 "missing_by_lang": {c: sum(1 for v in covs.values() if c not in v["covered"]) for c in langs},
+                "empty_subtitles": core.db.scalar("SELECT COUNT(*) FROM subtitles WHERE kind='external' AND status='empty' AND present=1"),
                 "active_jobs": core.db.scalar("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"),
                 "pending_downloads": core.db.scalar("SELECT COUNT(*) FROM downloads WHERE status='prepared'")}
+
+    class DeleteEmptyIn(BaseModel):
+        ids: list[int] = Field(max_length=5000)
+
+    @api.get("/subtitles/empty")
+    def empty_subs(q: str | None = None, lang: str | None = None, limit: int = Query(100, le=500), offset: int = 0):
+        return core.empty_subtitles(q, lang, limit, offset)
+
+    @api.get("/subtitles/empty/ids")
+    def empty_subs_ids(q: str | None = None, lang: str | None = None):
+        return {"ids": core.empty_subtitle_ids(q, lang)}
+
+    @api.post("/subtitles/empty/delete")
+    def delete_empty(b: DeleteEmptyIn):
+        return core.delete_empty_subtitles(b.ids)
 
     @api.get("/events")
     def events(limit: int = Query(50, le=500)):

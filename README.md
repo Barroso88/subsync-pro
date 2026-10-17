@@ -89,6 +89,10 @@ Os segredos também podem ser introduzidos na UI (ficam em `/data/secrets.json`,
 
 No Radarr/Sonarr: *Settings → Connect → Webhook* (eventos **On File Import** e **On File Upgrade** no Radarr — **On Import**/**On Upgrade** no Sonarr —, método POST) com o URL `http://IP:8484/api/webhooks/radarr` (ou `/sonarr`), utilizador `subsync` e palavra-passe = token mostrado em *Definições → Radarr/Sonarr → Webhook → Configurar*. A autenticação usa *basic auth* (o token não vai no URL, para não aparecer em logs); o endpoint não usa a sessão da interface. A app analisa apenas a pasta do ficheiro importado e, se *Procurar automaticamente após cada análise* estiver ativo, procura a legenda (respeitando «exigir confirmação»). O caminho recebido passa pelo **mapeamento de caminhos** e tem de ficar dentro de uma biblioteca; senão a tarefa falha com mensagem clara.
 
+## Legendas vazias
+
+A página **Legendas vazias** lista ficheiros de legenda com 0 bytes (ex.: deixados por downloads falhados de outras ferramentas, que o Bazarr conta como «existentes»). Permite apagá-los em lote com confirmação. O servidor só apaga um ficheiro se, **no momento de apagar**, for uma legenda (`.srt/.ass/.ssa/.vtt/.sub/.idx`), tiver 0 bytes, não seja um atalho, e esteja numa biblioteca com **escrita ativa**. Nunca apaga vídeos nem legendas com conteúdo. É a única operação de apagar da aplicação; é sempre iniciada por si.
+
 ## Leitura dos vídeos
 
 Por omissão a app só abre os vídeos com o FFprobe (metadados e lista de faixas, leitura mínima). **Nunca** lê o conteúdo completo dos vídeos, nem em «Reclassificar legendas». Só se ativar explicitamente *Definições → Scanner → Ler o texto das legendas embutidas «pt»* é que o ffmpeg extrai essas faixas (lê quase todo o ficheiro). Alternativa barata: *Definições → Idiomas → Legendas «pt» sem variante → Assumir pt-PT*.

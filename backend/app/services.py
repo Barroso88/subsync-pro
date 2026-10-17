@@ -836,6 +836,87 @@ class App:
         ctx.step(os.path.basename(real), message="concluído", force=True)
         return res
 
+    # ---- legendas vazias (listar / apagar com salvaguardas) --------------------
+    def _empty_rows(self, q: str | None = None, lang: str | None = None) -> list[dict]:
+        where, args = ["s.kind='external'", "s.status='empty'", "s.present=1"], []
+        if lang:
+            where.append("s.lang IS ?" if lang == "none" else "s.lang=?")
+            args.append(None if lang == "none" else lang)
+        if q:
+            where.append("(lower(s.path) LIKE ? OR lower(coalesce(m.title,'')) LIKE ?)")
+            args += [f"%{q.lower()}%"] * 2
+        rows_ = self.db.query(
+            "SELECT s.id, s.path, s.lang, s.library_id, s.media_id, m.title, m.year, m.kind FROM subtitles s "
+            f"LEFT JOIN media_items m ON m.id=s.media_id WHERE {' AND '.join(where)} ORDER BY lower(coalesce(m.title,s.path)), s.path", args)
+        writable = {l["id"]: l["effective_write"] for l in self.libraries()}
+        out = []
+        for r in rows_:
+            d = dict(r)
+            d["name"] = os.path.basename(d["path"])
+            d["folder"] = os.path.basename(os.path.dirname(d["path"]))
+            d["deletable"] = bool(writable.get(d["library_id"]))
+            out.append(d)
+        return out
+
+    def empty_subtitles(self, q: str | None, lang: str | None, limit: int, offset: int) -> dict:
+        rows_ = self._empty_rows(q, lang)
+        return {"total": len(rows_), "deletable": sum(1 for r in rows_ if r["deletable"]), "items": rows_[offset: offset + limit]}
+
+    def empty_subtitle_ids(self, q: str | None, lang: str | None) -> list[int]:
+        return [r["id"] for r in self._empty_rows(q, lang) if r["deletable"]]
+
+    def delete_empty_subtitles(self, ids: list[int]) -> dict:
+        """Apaga SÓ ficheiros de legenda que estão a 0 bytes NESTE momento, dentro de bibliotecas com escrita ativa.
+        Cada passo é revalidado no disco (a BD pode estar desatualizada)."""
+        from .naming import SUB_EXTS
+        roots = self.writable_roots()
+        res = {"deleted": 0, "skipped": [], "requested": len(ids)}
+        for sid in dict.fromkeys(ids):
+            r = self.db.one("SELECT id,path,kind,status,media_id FROM subtitles WHERE id=?", (sid,))
+
+            def skip(reason: str, path: str | None = None):
+                res["skipped"].append({"id": sid, "path": path or (r["path"] if r else None), "reason": reason})
+
+            if not r or r["kind"] != "external":
+                skip("não é uma legenda externa conhecida")
+                continue
+            path = r["path"]
+            if os.path.splitext(path)[1].lower() not in SUB_EXTS:
+                skip("extensão que não é de legenda")
+                continue
+            try:
+                real = require_within(path, roots)
+            except PathSecurityError:
+                skip("fora de uma biblioteca com escrita ativa")
+                continue
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                self.db.execute("UPDATE subtitles SET present=0 WHERE id=?", (sid,))
+                skip("já não existe")
+                continue
+            except OSError as e:
+                skip(f"erro ao ler: {e.strerror}")
+                continue
+            import stat as _stat
+            if not _stat.S_ISREG(st.st_mode) or real != os.path.realpath(path) or os.path.islink(path):
+                skip("não é um ficheiro normal (atalho/pasta)")
+                continue
+            if st.st_size != 0:
+                skip(f"já não está vazio ({st.st_size} bytes)")
+                self.db.execute("UPDATE subtitles SET size=? WHERE id=?", (st.st_size, sid))
+                continue
+            try:
+                os.unlink(path)
+            except OSError as e:
+                skip(f"não foi possível apagar: {e.strerror}")
+                continue
+            self.db.execute("UPDATE subtitles SET present=0 WHERE id=?", (sid,))
+            add_event(self.db, "cleanup", f"Legenda vazia apagada: {os.path.basename(path)}", "info", r["media_id"])
+            res["deleted"] += 1
+        add_event(self.db, "cleanup", f"Limpeza de legendas vazias: {res['deleted']} apagadas, {len(res['skipped'])} ignoradas.")
+        return res
+
     # ---- revalidação de legendas existentes ---------------------------------
     def _job_revalidate(self, ctx: JobContext, p: dict) -> dict:
         lib_ids = [r["id"] for r in self.db.query("SELECT id FROM libraries")]

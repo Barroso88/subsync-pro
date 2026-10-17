@@ -1,17 +1,18 @@
 import { ReactNode, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, AlertCircle, Clapperboard, Download, Gauge, Menu, PlugZap, Search, Settings, Tv, ListVideo, X, Subtitles } from "lucide-react";
+import { Activity, AlertCircle, FileX, Clapperboard, Download, Gauge, Menu, PlugZap, Search, Settings, Tv, ListVideo, X, Subtitles } from "lucide-react";
 import { api } from "../api";
 import { cx } from "../lib";
 import { useJobWatcher, useMeta, useSidebar } from "../hooks";
 
-const NAV: { to: string; label: string; icon: any; badge?: "missing" | "active_jobs" | "pending_downloads" }[] = [
+const NAV: { to: string; label: string; icon: any; badge?: "missing" | "active_jobs" | "pending_downloads" | "empty_subtitles" }[] = [
   { to: "/", label: "Dashboard", icon: Gauge },
   { to: "/filmes", label: "Filmes", icon: Clapperboard },
   { to: "/series", label: "Séries", icon: Tv },
   { to: "/episodios", label: "Episódios", icon: ListVideo },
   { to: "/em-falta", label: "Legendas em falta", icon: AlertCircle, badge: "missing" },
+  { to: "/legendas-vazias", label: "Legendas vazias", icon: FileX, badge: "empty_subtitles" },
   { to: "/procurar", label: "Procurar legendas", icon: Search },
   { to: "/downloads", label: "Histórico de downloads", icon: Download, badge: "pending_downloads" },
   { to: "/tarefas", label: "Tarefas e atividade", icon: Activity, badge: "active_jobs" },
