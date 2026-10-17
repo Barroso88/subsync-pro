@@ -675,6 +675,7 @@ class App:
                 "languages": primary, "estimated_requests": len(needing) * 2,
                 "providers": [{"name": n, "downloads_today": p["downloads_today"], "daily_limit": p["daily_limit"],
                                "configured": p["configured"]} for n, p in st.items() if p["enabled"]],
+                "days_estimate": next((max(1, -(-len(needing) // p["daily_limit"])) for p in st.values() if p["enabled"] and p["daily_limit"] and needing), None),
                 "require_confirmation": self.settings.get("require_confirmation")}
 
     def start_batch(self, media_ids: list[int], languages: list[str] | None, install_now: bool, min_tier: str = "probable") -> int:

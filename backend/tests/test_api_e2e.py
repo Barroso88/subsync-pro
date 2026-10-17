@@ -288,3 +288,27 @@ def test_search_falls_back_through_strategies(client):
     r = client.post(f"/api/media/{mv['id']}/search", json={}).json()
     assert r["results"] and r["results"][0]["result"]["found_by"] == "só título, sem ano"
     assert len(r["query"]["tried"]) >= 2 and "year" not in seen[0]
+
+
+def test_media_ids_returns_all_matching_not_just_a_page(client):
+    ids = client.get("/api/media/ids", params={"status": "missing", "lang": "pt-PT"}).json()["ids"]
+    total = client.get("/api/media", params={"status": "missing", "lang": "pt-PT", "limit": 1}).json()["total"]
+    assert len(ids) == total == 2
+    only_ep = client.get("/api/media/ids", params={"kind": "episode", "status": "missing", "lang": "pt-PT"}).json()["ids"]
+    assert len(only_ep) == 1
+
+
+def test_batch_with_language_only_searches_that_language(client):
+    ids = client.get("/api/media/ids", params={"status": "missing", "lang": "pt-PT", "kind": "episode"}).json()["ids"]
+    client.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}, {"code": "pt-BR", "priority": "primary"}]})
+    pv = client.post("/api/batch/preview", json={"media_ids": ids, "languages": ["pt-PT"]}).json()
+    assert pv["languages"] == ["pt-PT"] and pv["needing_subtitles"] == 1
+    j = client.post("/api/batch", json={"media_ids": ids, "languages": ["pt-PT"], "install": False, "min_tier": "probable"}).json()["job_id"]
+    for _ in range(200):
+        job = client.get(f"/api/jobs/{j}").json()
+        if job["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done"
+    langs = {d["lang"] for d in client.get("/api/downloads").json()["items"]}
+    assert langs <= {"pt-PT"}                        # nunca procurou/preparou pt-BR

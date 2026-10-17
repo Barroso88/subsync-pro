@@ -65,6 +65,11 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
   const pages = Math.max(1, Math.ceil(total / limit));
   const toggle = (id: number) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allOnPage = items.length > 0 && items.every((i) => sel.has(i.id));
+  const selectAll = useMutation({
+    mutationFn: () => api.get<{ ids: number[] }>("/media/ids" + qs({ kind, q: dq, lang, status })),
+    onSuccess: (r) => setSel(new Set(r.ids)),
+  });
+  const batchLangs = missingMode && lang ? [lang] : undefined;
 
   return (
     <div>
@@ -106,6 +111,14 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
           hint={q || lang || status ? "Experimente remover filtros ou alterar a pesquisa." : "Adicione uma biblioteca em Definições e execute a primeira análise."} />
       )}
 
+      {items.length > 0 && total > items.length && (allOnPage || sel.size > 0) && sel.size < total && (
+        <div className="card px-4 py-2.5 mb-3 text-sm flex items-center gap-3 flex-wrap">
+          <span>{sel.size} selecionados.</span>
+          <button className="text-accent hover:underline" onClick={() => selectAll.mutate()} disabled={selectAll.isPending}>
+            {selectAll.isPending ? "A selecionar…" : `Selecionar todos os ${total}${batchLangs ? ` em falta em ${lang}` : ""} (não só esta página)`}</button>
+        </div>
+      )}
+      {sel.size >= total && total > items.length && <div className="card px-4 py-2.5 mb-3 text-sm flex items-center gap-3">Todos os {total} itens do filtro estão selecionados. <button className="text-accent hover:underline" onClick={() => setSel(new Set())}>Limpar</button></div>}
       {items.length > 0 && view === "grid" && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">
           {items.map((i) => (
@@ -171,17 +184,17 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
           <button className="btn-quiet" onClick={() => setSel(new Set())}>Limpar</button>
         </div>
       )}
-      <BatchModal open={batch} ids={[...sel]} onClose={() => setBatch(false)} onStarted={() => { setBatch(false); setSel(new Set()); }} />
+      <BatchModal open={batch} ids={[...sel]} languages={batchLangs} onClose={() => setBatch(false)} onStarted={() => { setBatch(false); setSel(new Set()); }} />
       <ItemDrawer id={open} onClose={() => setOpen(null)} />
     </div>
   );
 }
 
-export function BatchModal({ open, ids, onClose, onStarted }: { open: boolean; ids: number[]; onClose: () => void; onStarted: () => void }) {
+export function BatchModal({ open, ids, languages, onClose, onStarted }: { open: boolean; ids: number[]; languages?: string[]; onClose: () => void; onStarted: () => void }) {
   const [install, setInstall] = useState(false);
   const meta = useMeta();
   const start = useStartJob();
-  const pv = useQuery({ queryKey: ["batch-preview", ids], queryFn: () => api.post<any>("/batch/preview", { media_ids: ids }), enabled: open && ids.length > 0 });
+  const pv = useQuery({ queryKey: ["batch-preview", ids, languages], queryFn: () => api.post<any>("/batch/preview", { media_ids: ids, languages }), enabled: open && ids.length > 0 });
   const canWrite = (meta.data?.writable_roots.length ?? 0) > 0;
   useEffect(() => { if (open) setInstall(false); }, [open]);
   const p = pv.data;
@@ -190,7 +203,7 @@ export function BatchModal({ open, ids, onClose, onStarted }: { open: boolean; i
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Cancelar</button>
         <button className="btn-primary" disabled={!p || !p.needing_subtitles || start.isPending}
-          onClick={() => start.mutate({ url: "/batch", body: { media_ids: ids, install, min_tier: "probable" } }, { onSuccess: onStarted })}>
+          onClick={() => start.mutate({ url: "/batch", body: { media_ids: ids, languages, install, min_tier: "probable" } }, { onSuccess: onStarted })}>
           {start.isPending && <Loader2 size={14} className="animate-spin" />}Confirmar e iniciar
         </button>
       </>}>
@@ -202,6 +215,7 @@ export function BatchModal({ open, ids, onClose, onStarted }: { open: boolean; i
               <div key={String(k)} className="card bg-s2 p-3"><div className="label">{k}</div><div className="text-xl font-semibold tabular-nums mt-1">{v}</div></div>
             ))}
           </div>
+          {p.days_estimate && p.days_estimate > 1 && <div className="rounded-lg border border-warn/40 bg-warn/10 p-3 text-xs">Com o limite diário do fornecedor, esta lista demora cerca de <b>{p.days_estimate} dias</b> a ficar completa. A tarefa pára quando o limite diário é atingido; volte a lançá-la no dia seguinte (só procura o que ainda falta).</div>}
           <div className="text-mute">Idiomas em falta a procurar: <b className="text-fg font-medium">{p.languages.join(", ") || "—"}</b>. Itens já cobertos são ignorados.</div>
           {p.providers.map((f: any) => (
             <div key={f.name} className="flex items-center gap-2 text-xs text-mute">

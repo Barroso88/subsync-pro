@@ -270,11 +270,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         d["unknown_lang"] = c.get("unknown_lang", 0)
         return d
 
-    @api.get("/media")
-    def media_list(kind: str | None = None, q: str | None = None, lang: str | None = None,
-                   status: str | None = None, series: str | None = None, season: int | None = None,
-                   sort: str = "title", limit: int = Query(60, le=500), offset: int = 0):
-        """status: genericpt | missing | none (sem nenhuma legenda) | other (só noutros idiomas) | has | suspect | unverified"""
+    def _filtered_media(kind, q, lang, status, series, season, sort) -> list[dict]:
         args: list[Any] = []
         where = ["m.present=1"]
         if kind in ("movie", "episode"):
@@ -292,7 +288,6 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         order = {"title": "lower(coalesce(m.series_title,m.title)), m.season, m.episode, lower(m.title)", "year": "m.year DESC, lower(m.title)",
                  "recent": "m.id DESC"}.get(sort, "lower(m.title)")
         rows_ = core.db.query(f"SELECT m.* FROM media_items m WHERE {' AND '.join(where)} ORDER BY {order}", args)
-        ids = [r["id"] for r in rows_]
         covs = cov.compute(core.db, core.settings)  # derivado dos dados reais
         out = []
         for r in rows_:
@@ -318,7 +313,21 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
             elif lang and lang not in covered:
                 continue
             out.append(_item_view(dict(r), c))
+        return out
+
+    @api.get("/media")
+    def media_list(kind: str | None = None, q: str | None = None, lang: str | None = None,
+                   status: str | None = None, series: str | None = None, season: int | None = None,
+                   sort: str = "title", limit: int = Query(60, le=500), offset: int = 0):
+        """status: genericpt | missing | none (sem nenhuma legenda) | other (só noutros idiomas) | has | suspect | unverified"""
+        out = _filtered_media(kind, q, lang, status, series, season, sort)
         return {"total": len(out), "items": out[offset: offset + limit]}
+
+    @api.get("/media/ids")
+    def media_ids(kind: str | None = None, q: str | None = None, lang: str | None = None, status: str | None = None,
+                  series: str | None = None, season: int | None = None):
+        """Ids de TODOS os itens que cumprem o filtro (para «selecionar todos»)."""
+        return {"ids": [i["id"] for i in _filtered_media(kind, q, lang, status, series, season, "title")][:6000]}
 
     @api.get("/media/{mid}")
     def media_detail(mid: int):
