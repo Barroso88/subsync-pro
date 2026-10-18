@@ -439,6 +439,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def translation_status():
         return core.translation_status()
 
+    @api.post("/translation/test")
+    def translation_test():
+        return core.translation_test()
+
     @api.post("/media/{mid}/translate")
     def translate(mid: int, b: TranslateIn):
         return core.translate_prepare(mid, b.result, b.target)
@@ -602,6 +606,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         elif k == "translation":
             if not isinstance(v, dict) or not isinstance(v.get("source_languages", []), list):
                 raise HTTPException(400, "Definições de tradução inválidas")
+            if v.get("engine", "deepl") not in ("deepl", "gemini") or not isinstance(v.get("gemini_model", ""), str) or len(v.get("gemini_model", "")) > 80:
+                raise HTTPException(400, "Motor ou modelo de tradução inválido")
         elif k == "generic_pt_variant" and v not in ("", "pt-PT", "pt-BR"):
             raise HTTPException(400, "generic_pt_variant inválido")
         elif k == "hi_policy" and v not in ("include", "exclude", "only"):

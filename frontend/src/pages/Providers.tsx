@@ -89,37 +89,64 @@ function ProviderCard({ p }: { p: P }) {
   );
 }
 
-interface Tr { enabled: boolean; configured: boolean; source: string; plan: string | null; usage: { used: number; limit: number; remaining: number } | null; error: string | null }
+interface Tr { enabled: boolean; configured: boolean; engine: "deepl" | "gemini"; model: string | null; deepl_configured: boolean; gemini_configured: boolean; source: string; plan: string | null; usage: { used: number; limit: number; remaining: number } | null; error: string | null }
 
 function TranslationCard() {
   const qc = useQueryClient();
   const toast = useToast();
+  const settings = useSettings();
   const [key, setKey] = useState("");
+  const [model, setModel] = useState<string | null>(null);
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const q = useQuery({ queryKey: ["translation"], queryFn: () => api.get<Tr>("/translation") });
-  const save = useMutation({
-    mutationFn: () => api.put("/secrets", { values: { deepl_api_key: key.trim() } }),
-    onSuccess: () => { toast("ok", "Chave DeepL guardada"); setKey(""); qc.invalidateQueries({ queryKey: ["translation"] }); },
+  const t = q.data;
+  const engine = t?.engine ?? "deepl";
+  const cfg = settings.data?.translation ?? { enabled: false, auto_fallback: false, source_languages: ["en"] };
+  const saveCfg = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => api.put("/settings", { translation: { ...cfg, ...patch } }),
+    onSuccess: () => { setTestMsg(null); setKey(""); qc.invalidateQueries({ queryKey: ["settings"] }); qc.invalidateQueries({ queryKey: ["translation"] }); },
     onError: (e: Error) => toast("bad", e.message),
   });
-  const t = q.data;
+  const save = useMutation({
+    mutationFn: () => api.put("/secrets", { values: { [engine === "gemini" ? "gemini_api_key" : "deepl_api_key"]: key.trim() } }),
+    onSuccess: () => { toast("ok", `Chave ${engine === "gemini" ? "Gemini" : "DeepL"} guardada`); setKey(""); qc.invalidateQueries({ queryKey: ["translation"] }); },
+    onError: (e: Error) => toast("bad", e.message),
+  });
+  const test = useMutation({
+    mutationFn: () => api.post<{ sample: string }>("/translation/test"),
+    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona. «Good morning, how are you?» → «${r.sample}»` }),
+    onError: (e: Error) => setTestMsg({ ok: false, text: e.message }),
+  });
   const pct = t?.usage && t.usage.limit ? Math.min(100, (t.usage.used / t.usage.limit) * 100) : 0;
+  const gem = engine === "gemini";
   return (
     <div className="card p-5 mt-4 animate-rise">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="flex items-center gap-2.5 flex-wrap"><h2 className="font-semibold">DeepL · tradução automática</h2>
-            <Badge tone={!t?.configured ? "warn" : t.error ? "bad" : "ok"}>{!t?.configured ? "Sem chave" : t.error ? "Erro" : `Ligado (${t.plan === "free" ? "plano gratuito" : "plano pago"})`}</Badge></div>
-          <div className="text-xs text-mute mt-1 max-w-2xl">Traduz legendas (ex.: inglês → pt-PT/pt-BR) mantendo os tempos. O texto das legendas é enviado ao DeepL. O resultado fica sempre assinalado como tradução automática e «por confirmar». Ative em Definições → Idiomas.</div>
+          <div className="flex items-center gap-2.5 flex-wrap"><h2 className="font-semibold">Tradução automática · {gem ? "Gemini" : "DeepL"}</h2>
+            <Badge tone={!t?.configured ? "warn" : t.error ? "bad" : "ok"}>{!t?.configured ? "Sem chave" : t.error ? "Erro" : gem ? `Chave definida (${t.model})` : `Ligado (${t.plan === "free" ? "plano gratuito" : "plano pago"})`}</Badge></div>
+          <div className="text-xs text-mute mt-1 max-w-2xl">Traduz legendas (ex.: inglês → pt-PT/pt-BR) mantendo os tempos. O texto das legendas é enviado ao serviço escolhido. O resultado fica sempre assinalado como tradução automática e «por confirmar». Ative em Definições → Idiomas.</div>
         </div>
       </div>
-      <div className="mt-4 max-w-xl">
-        <Field label="API key do DeepL" hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}). Chaves gratuitas terminam em :fx.` : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>
+      <div className="mt-4 max-w-xl space-y-4">
+        <Field label="Motor de tradução" hint={gem ? "Modelo de IA: traduz com o contexto das falas vizinhas e respeita «português de Portugal». Pode recusar falas (violência/sexo): essas ficam no original e a tradução é rejeitada se forem mais de 3 %. O escalão gratuito pode usar os pedidos para melhorar produtos do Google." : "Tradução automática clássica, com quota mensal em caracteres."}>
+          <select className="input" value={engine} disabled={saveCfg.isPending} onChange={(e) => saveCfg.mutate({ engine: e.target.value })}>
+            <option value="deepl">DeepL</option><option value="gemini">Gemini (Google AI Studio)</option></select>
+        </Field>
+        {gem && (
+          <Field label="Modelo Gemini" hint="Por omissão gemini-2.5-flash. Se o Google o substituir, escreva aqui o nome do modelo atual (aistudio.google.com).">
+            <div className="flex gap-2"><input className="input" value={model ?? cfg.gemini_model ?? "gemini-2.5-flash"} onChange={(e) => setModel(e.target.value)} />
+              <button className="btn-ghost" disabled={model === null || saveCfg.isPending} onClick={() => saveCfg.mutate({ gemini_model: (model ?? "").trim() || "gemini-2.5-flash" }, { onSuccess: () => setModel(null) })}>Guardar</button></div>
+          </Field>
+        )}
+        <Field label={gem ? "API key do Gemini" : "API key do DeepL"} hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}).${gem ? "" : " Chaves gratuitas terminam em :fx."}` : gem ? "Crie uma chave em aistudio.google.com/apikey." : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>
           <div className="flex gap-2"><div className="relative flex-1"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
             <input className="input pl-9" type="password" autoComplete="off" disabled={t?.source === "env"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={t?.configured ? "•••••••• (vazio = manter)" : ""} /></div>
             <button className="btn-primary" disabled={!key.trim() || save.isPending} onClick={() => save.mutate()}>Guardar</button>
-            <button className="btn-ghost" onClick={() => q.refetch()} disabled={q.isFetching}>{q.isFetching && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
+            <button className="btn-ghost" disabled={q.isFetching || test.isPending || !t?.configured} onClick={() => { setTestMsg(null); if (gem) test.mutate(); else q.refetch(); }}>{(q.isFetching || test.isPending) && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
         </Field>
       </div>
+      {testMsg && <div className={`mt-3 text-sm flex gap-2 ${testMsg.ok ? "text-ok" : "text-bad"}`}>{testMsg.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <XCircle size={16} className="mt-0.5 shrink-0" />}{testMsg.text}</div>}
       {t?.error && <div className="mt-3 text-sm text-bad flex gap-2"><XCircle size={16} className="mt-0.5" />{t.error}</div>}
       {t?.usage && (
         <div className="mt-4 max-w-xl">

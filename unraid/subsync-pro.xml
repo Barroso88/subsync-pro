@@ -28,6 +28,7 @@
   <Config Name="OpenSubtitles palavra-passe" Target="OPENSUBTITLES_PASSWORD" Default="" Mode="" Description="Necessário para descarregar" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="SubDL API key" Target="SUBDL_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="DeepL API key" Target="DEEPL_API_KEY" Default="" Mode="" Description="Opcional: tradução automática de legendas (chaves gratuitas terminam em :fx)" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Gemini API key" Target="GEMINI_API_KEY" Default="" Mode="" Description="Opcional: tradução de legendas com o Gemini (Google AI Studio)" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Bazarr API key" Target="BAZARR_API_KEY" Default="" Mode="" Description="Opcional: pedir legendas ao Bazarr (Settings → General → Security → API Key)" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Plex token" Target="PLEX_TOKEN" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="Radarr API key" Target="RADARR_API_KEY" Default="" Mode="" Description="Opcional" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>

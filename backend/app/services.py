@@ -33,7 +33,7 @@ from .scanner import Scanner, ScanAborted
 from .settings import Settings
 from .subtitles.parser import ParsedSub, parse_bytes, decode_bytes, parse_srt
 from . import subtitle_tools as st
-from .translation import TARGETS, DeepL, DeepLError, count_chars, to_srt, translate_cues
+from .translation import LANG_NAMES, TARGETS, DeepL, DeepLError, Gemini, count_chars, to_srt, translate_cues
 from .util import add_event, log, now, scrub
 
 TIER_ORDER = {"incompatible": 0, "weak": 1, "probable": 2, "hash": 3}
@@ -570,17 +570,43 @@ class App:
         return self.get_download(did)
 
     # ---- tradução automática (DeepL) -----------------------------------------
-    def _deepl(self) -> DeepL:
-        key = self.secrets.get("deepl_api_key")
+    def _engine_name(self) -> str:
+        e = self.settings.get("translation").get("engine")
+        return e if e in ("deepl", "gemini") else "deepl"
+
+    def _engine_key(self) -> str:
+        return self.secrets.get("gemini_api_key" if self._engine_name() == "gemini" else "deepl_api_key")
+
+    def _deepl(self) -> "DeepL | Gemini":
+        """Motor de tradução escolhido em Definições (o nome do método é histórico)."""
+        name, key = self._engine_name(), self._engine_key()
         if not key:
-            raise ServiceError("API key do DeepL não configurada (Fornecedores → DeepL).", 400)
+            raise ServiceError(f"API key do {'Gemini' if name == 'gemini' else 'DeepL'} não configurada (Fornecedores → Tradução).", 400)
+        if name == "gemini":
+            return Gemini(key, self.settings.get("translation").get("gemini_model") or "gemini-2.5-flash", self.transport)
         return DeepL(key, self.transport)
+
+    def _targets(self) -> list[str]:
+        return list(LANG_NAMES if self._engine_name() == "gemini" else TARGETS)
+
+    def translation_test(self) -> dict:
+        """Uma tradução mínima para confirmar chave e modelo (consome uma fração de pedido)."""
+        eng = self._deepl()
+        try:
+            out = eng.translate(["Good morning, how are you?"], "pt-PT", "en")
+        except DeepLError as e:
+            raise ServiceError(str(e), 502)
+        return {"ok": True, "engine": self._engine_name(), "sample": out[0] if out else ""}
 
     def translation_status(self) -> dict:
         cfg = self.settings.get("translation")
-        st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self.secrets.get("deepl_api_key")),
-              "source": self.secrets.source("deepl_api_key"), "targets": list(TARGETS), "usage": None, "error": None, "plan": None}
-        if st["configured"]:
+        eng = self._engine_name()
+        kname = "gemini_api_key" if eng == "gemini" else "deepl_api_key"
+        st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self.secrets.get(kname)), "engine": eng,
+              "model": cfg.get("gemini_model") if eng == "gemini" else None, "deepl_configured": bool(self.secrets.get("deepl_api_key")),
+              "gemini_configured": bool(self.secrets.get("gemini_api_key")),
+              "source": self.secrets.source(kname), "targets": self._targets(), "usage": None, "error": None, "plan": None}
+        if st["configured"] and eng == "deepl":
             st["plan"] = "free" if self.secrets.get("deepl_api_key").endswith(":fx") else "pro"
             try:
                 u = self._deepl().usage()
@@ -593,7 +619,7 @@ class App:
         """Descarrega a legenda de origem, traduz o texto (tempos intactos) e deixa-a «por confirmar»."""
         if not self.settings.get("translation")["enabled"]:
             raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
-        if target not in TARGETS:
+        if target not in self._targets():
             raise ServiceError("Idioma de destino não suportado para tradução.")
         media = self.media_dict(media_id)
         try:
@@ -617,9 +643,10 @@ class App:
             from .subtitles.parser import analyze
             from .evaluator import Factor
             n_chars = count_chars(v.parsed.cues)
+            eng_label = "Gemini" if self._engine_name() == "gemini" else "DeepL"
             usage = deepl.usage()
             if usage.limit and n_chars > usage.remaining:
-                raise ServiceError(f"Quota DeepL insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
+                raise ServiceError(f"Quota {eng_label} insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
             cues, sent = translate_cues(v.parsed.cues, target, src, deepl)
             text = to_srt(cues)
             tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
@@ -628,12 +655,16 @@ class App:
             an = analyze(tv.parsed, media.get("duration"), size=len(text))
             ev = evaluate_content(ev, media, tv.parsed, an, self._reference_for(media, target))
             ev.score = max(0, ev.score - 15)
-            ev.factors.append(Factor("Tradução automática (DeepL): qualidade inferior a uma legenda humana", -15, "negative"))
+            ev.factors.append(Factor(f"Tradução automática ({eng_label}): qualidade inferior a uma legenda humana", -15, "negative"))
+            kept = getattr(deepl, "untranslated", 0)
+            if kept:
+                ev.factors.append(Factor(f"{kept} falas ficaram no idioma original (recusadas pelo modelo)", -5, "negative"))
+                ev.notes.append(f"{kept} falas não foram traduzidas pelo modelo e mantêm o idioma original: reveja.")
             ev.notes.append(f"Traduzida de «{src or 'idioma desconhecido'}» para «{target}»; os tempos são os da legenda original. "
                             "Itálicos e formatação foram removidos. Reveja antes de usar.")
-            extra = {"translation": {"engine": "deepl", "source_lang": src, "target": target, "characters": sent,
+            extra = {"translation": {"engine": self._engine_name(), "source_lang": src, "target": target, "characters": sent,
                                       "source_file": df.name}}
-            add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, DeepL)", "info", media_id)
+            add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, {eng_label})", "info", media_id)
             return self._finish_prepare(did, media, r, target, tv, ev, an, extra)
         except (ProviderError, InvalidDownload, ServiceError, DeepLError) as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
@@ -793,7 +824,7 @@ class App:
 
     def _can_auto_translate(self, lang: str) -> bool:
         t = self.settings.get("translation")
-        return bool(t["enabled"] and t["auto_fallback"] and lang in TARGETS and self.secrets.get("deepl_api_key"))
+        return bool(t["enabled"] and t["auto_fallback"] and lang in self._targets() and self._engine_key())
 
     def _batch_translate(self, mid: int, lang: str, out: dict) -> bool:
         """Sem legenda no idioma pedido: traduz a melhor de um idioma de origem. Fica SEMPRE «por confirmar»."""

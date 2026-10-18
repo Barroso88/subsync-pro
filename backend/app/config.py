@@ -75,6 +75,7 @@ SECRET_KEYS = {
     "opensubtitles_password": "OPENSUBTITLES_PASSWORD",
     "subdl_api_key": "SUBDL_API_KEY",
     "deepl_api_key": "DEEPL_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
     "webhook_token": "SUBSYNC_WEBHOOK_TOKEN",
     "bazarr_api_key": "BAZARR_API_KEY",
     "plex_token": "PLEX_TOKEN",

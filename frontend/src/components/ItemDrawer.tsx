@@ -170,11 +170,11 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       </div>
       {res && !trOn && (
         <div className="card border-info/30 bg-info/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-info shrink-0 mt-0.5" />
-          <div>Sem legenda no seu idioma? Pode <b>traduzir automaticamente</b> uma legenda inglesa (DeepL). Ative-o em <Link to="/definicoes" className="text-accent underline">Definições → Idiomas</Link> e coloque a chave em <Link to="/fornecedores" className="text-accent underline">Fornecedores</Link>.</div></div>
+          <div>Sem legenda no seu idioma? Pode <b>traduzir automaticamente</b> uma legenda inglesa (DeepL ou Gemini). Ative-o em <Link to="/definicoes" className="text-accent underline">Definições → Idiomas</Link> e coloque a chave em <Link to="/fornecedores" className="text-accent underline">Fornecedores</Link>.</div></div>
       )}
       {res && trOn && !tr.data?.configured && !tr.isLoading && (
         <div className="card border-warn/30 bg-warn/5 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-warn shrink-0 mt-0.5" />
-          <div>A tradução está ativada mas falta a chave do DeepL: <Link to="/fornecedores" className="text-accent underline">Fornecedores → DeepL</Link>.</div></div>
+          <div>A tradução está ativada mas falta a chave do {tr.data?.engine === "gemini" ? "Gemini" : "DeepL"}: <Link to="/fornecedores" className="text-accent underline">Fornecedores → Tradução</Link>.</div></div>
       )}
       {bazarrOn && (
         <div className="card p-3.5 space-y-2.5">
@@ -204,14 +204,14 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       )}
       {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => prep.mutate(c)} busy={prep.isPending}
         onTranslate={canTranslate && c.result.language !== target ? () => setAskTr(c) : undefined} />)}
-      <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (DeepL)`}
+      <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (${tr.data?.engine === "gemini" ? "Gemini" : "DeepL"})`}
         footer={<><button className="btn-ghost" onClick={() => setAskTr(null)}>Cancelar</button>
           <button className="btn-primary" disabled={trans.isPending} onClick={() => askTr && trans.mutate(askTr)}>{trans.isPending && <Loader2 size={14} className="animate-spin" />}Descarregar e traduzir</button></>}>
         <div className="space-y-3 text-sm">
           <div>Vai descarregar <b className="break-all">{askTr?.result.release || askTr?.result.file_name}</b> ({askTr?.result.language}) e traduzir o texto para <b>{target}</b>, mantendo os tempos.</div>
           <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
-            <div>• O texto da legenda é enviado ao DeepL.</div>
-            <div>• Consome tipicamente 40 000–60 000 caracteres da sua quota{tr.data?.usage ? ` (restam ${tr.data.usage.remaining.toLocaleString("pt-PT")})` : ""}.</div>
+            <div>• O texto da legenda é enviado ao {tr.data?.engine === "gemini" ? "Gemini (Google)" : "DeepL"}.</div>
+            <div>• {tr.data?.engine === "gemini" ? "Consome pedidos/tokens da sua quota do Gemini (um filme costuma ser poucas dezenas de pedidos)." : <>Consome tipicamente 40 000–60 000 caracteres da sua quota</>}{tr.data?.usage ? ` (restam ${tr.data.usage.remaining.toLocaleString("pt-PT")})` : ""}.</div>
             <div>• Fica «por confirmar» e assinalada como <b>tradução automática</b>; reveja a pré-visualização antes de instalar.</div>
           </div>
         </div>
@@ -309,7 +309,7 @@ export function PreviewModal({ dl, onClose, writable, onDone }: { dl: Download |
         </div>
         {ev?.translation && (
           <div className="rounded-lg border border-warn/40 bg-warn/10 p-3.5 text-sm flex gap-2.5"><Languages size={16} className="text-warn shrink-0 mt-0.5" />
-            <div><b>Tradução automática ({ev.translation.engine === "deepl" ? "DeepL" : ev.translation.engine})</b> de «{ev.translation.source_lang ?? "?"}» para «{ev.translation.target}» · {ev.translation.characters.toLocaleString("pt-PT")} caracteres. Os tempos são os da legenda original; a qualidade é inferior à de uma legenda humana.</div></div>
+            <div><b>Tradução automática ({ev.translation.engine === "deepl" ? "DeepL" : ev.translation.engine === "gemini" ? "Gemini" : ev.translation.engine})</b> de «{ev.translation.source_lang ?? "?"}» para «{ev.translation.target}» · {ev.translation.characters.toLocaleString("pt-PT")} caracteres. Os tempos são os da legenda original; a qualidade é inferior à de uma legenda humana.</div></div>
         )}
         {blocked && <div className="flex gap-2 text-sm text-bad bg-bad/10 rounded-lg p-3"><ShieldAlert size={16} className="shrink-0 mt-0.5" />{ev.writable_error} Ative a escrita nesta biblioteca em Definições.</div>}
         {conflict && (

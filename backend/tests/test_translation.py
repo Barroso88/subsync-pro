@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.providers.opensubtitles import OpenSubtitles
 from app.subtitles.parser import parse_srt
-from app.translation import DeepL, DeepLError, rewrap, split_segments, to_srt, translate_cues, translatable
+from app.translation import DeepL, DeepLError, Gemini, rewrap, split_segments, to_srt, translate_cues, translatable
 from tests.conftest import make_srt
 
 
@@ -155,3 +155,91 @@ def test_batch_auto_fallback_leaves_pending_never_installs(client):
     assert job["status"] == "done" and job["result"]["translated"] == 1 and job["result"]["installed"] == 0, job
     assert client.get("/api/downloads", params={"status": "prepared"}).json()["total"] == 1
     assert not list((client.root / "Séries").rglob("*S01E02.pt-PT.srt"))
+
+
+# ---- Gemini ---------------------------------------------------------------------------
+
+def gem_resp(texts, **extra):
+    return httpx.Response(200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({"translations": texts})}]}}], **extra})
+
+
+def gem_transport(handler_log, mode="ok"):
+    def h(req: httpx.Request):
+        assert req.url.host == "generativelanguage.googleapis.com" and req.headers["x-goog-api-key"] == "GKEY"
+        assert "GKEY" not in str(req.url)                                    # a chave vai em cabeçalho, nunca no URL
+        body = json.loads(req.content)
+        items = json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]
+        handler_log.append(items)
+        if mode == "wrong_count" and len(items) > 5:
+            return gem_resp(items[:-1])                                       # o modelo «perde» uma fala
+        if mode == "blocked":
+            if any("BAD" in t for t in items):
+                if len(items) == 1:
+                    return httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
+                return httpx.Response(200, json={"candidates": [{"finishReason": "SAFETY"}]})
+        return gem_resp([f"PT:{t}" for t in items])
+    return httpx.MockTransport(h)
+
+
+def test_gemini_translates_validates_count_and_subdivides():
+    log = []
+    g = Gemini("GKEY", "gemini-2.5-flash", gem_transport(log, "wrong_count"))
+    texts = [f"line {i}" for i in range(100)]
+    out = g.translate(texts, "pt-PT", "en")
+    assert out == [f"PT:{t}" for t in texts] and g.untranslated == 0           # contagem errada → subdivide até acertar
+    assert max(len(x) for x in log[:1]) == 40 and any(len(x) <= 5 for x in log)
+    with pytest.raises(DeepLError):
+        g.translate(["x"], "ja")
+
+
+def test_gemini_blocked_items_kept_original_and_rejected_if_many():
+    log = []
+    g = Gemini("GKEY", transport=gem_transport(log, "blocked"))
+    texts = [f"line {i}" for i in range(200)] + ["BAD word"]
+    out = g.translate(texts, "pt-BR", "en")
+    assert out[-1] == "BAD word" and out[0] == "PT:line 0" and g.untranslated == 1     # 1 fala recusada: fica no original e é contada
+    many = [f"BAD {i}" for i in range(30)]
+    with pytest.raises(DeepLError) as e:
+        Gemini("GKEY", transport=gem_transport([], "blocked")).translate(many, "pt-PT", "en")
+    assert "rejeitada" in str(e.value)                                                  # demasiadas recusas: não instala uma legenda incompleta
+
+
+def test_gemini_errors_mapped():
+    for code, flag in ((403, "auth"), (429, "quota")):
+        g = Gemini("GKEY", transport=httpx.MockTransport(lambda r, c=code: httpx.Response(c, json={"error": {"message": "x"}})))
+        g._sleep = lambda s: None
+        with pytest.raises(DeepLError) as e:
+            g.translate(["x"], "pt-PT", "en")
+        assert getattr(e.value, flag)
+    g = Gemini("GKEY", "modelo/estranho;rm", httpx.MockTransport(lambda r: httpx.Response(404)))
+    assert g.model == "modeloestranhorm" and "/" not in g.model and ";" not in g.model                                                         # o nome do modelo é sanitizado
+
+
+def test_gemini_full_flow_via_api(cfg, fake_probe, media_root):
+    state, log = {"used": 0, "sent": 0}, []
+    base = transport(state)
+    gem = gem_transport(log)
+    OpenSubtitles._token = None
+    app = create_app(cfg, transport=httpx.MockTransport(lambda r: gem.handle_request(r) if r.url.host == "generativelanguage.googleapis.com" else base.handle_request(r)))
+    with TestClient(app) as c:
+        c.post("/api/libraries", json={"name": "Séries", "type": "series", "path": str(media_root / "Séries"), "writable": True})
+        c.put("/api/secrets", json={"values": {"opensubtitles_api_key": "K", "opensubtitles_username": "u", "opensubtitles_password": "p", "gemini_api_key": "GKEY"}})
+        c.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}], "translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"], "engine": "gemini", "gemini_model": "gemini-2.5-flash"}})
+        j = c.post("/api/scan", json={}).json()["job_id"]
+        for _ in range(200):
+            if c.get(f"/api/jobs/{j}").json()["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        st = c.get("/api/translation").json()
+        assert st["engine"] == "gemini" and st["configured"] and st["usage"] is None and "GKEY" not in json.dumps(st) and "pt-PT" in st["targets"]
+        assert c.post("/api/translation/test").json()["sample"].startswith("PT:")
+        item = e2(c)
+        res = c.post(f"/api/media/{item['id']}/search", json={"languages": ["en"]}).json()["results"][0]["result"]
+        d = c.post(f"/api/media/{item['id']}/translate", json={"result": res, "target": "pt-PT"}).json()
+        assert d["status"] == "prepared" and d["evaluation"]["translation"]["engine"] == "gemini"
+        assert any("Gemini" in f["label"] for f in d["evaluation"]["factors"])
+        inst = c.post(f"/api/downloads/{d['id']}/install", json={"policy": "fail"}).json()
+        cues = parse_srt(open(inst["dest_path"], encoding="utf-8").read()).cues
+        assert len(cues) == 120 and cues[0].text.startswith("PT:") and cues[0].start_ms == 10_000
+        bad = c.put("/api/settings", json={"translation": {"enabled": True, "source_languages": ["en"], "engine": "outro"}})
+        assert bad.status_code == 400

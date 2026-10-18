@@ -6,6 +6,7 @@ O resultado é SEMPRE assinalado como tradução automática. O texto das legend
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -113,6 +114,108 @@ class DeepL:
         return out
 
 
+# ---- Gemini (Google AI Studio) -------------------------------------------------------
+
+LANG_NAMES = {"pt-PT": "European Portuguese (Portugal, NOT Brazilian: use vocabulary and grammar of Portugal, e.g. «ecrã», «autocarro», «telemóvel», «a fazer»)",
+              "pt-BR": "Brazilian Portuguese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "nl": "Dutch"}
+SRC_NAMES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "nl": "Dutch", "pt": "Portuguese", "pt-PT": "Portuguese", "pt-BR": "Portuguese"}
+GEMINI_CHUNK = 40        # falas por pedido (contexto suficiente sem respostas demasiado longas)
+
+
+class Gemini:
+    """Tradução por modelo de IA. Só texto; devolve SEMPRE o mesmo número de itens (valida e subdivide)."""
+    SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in
+              ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
+
+    def __init__(self, key: str, model: str = "gemini-2.5-flash", transport: httpx.BaseTransport | None = None):
+        self.key, self.transport = key, transport
+        self.model = re.sub(r"[^A-Za-z0-9._-]", "", model or "gemini-2.5-flash") or "gemini-2.5-flash"
+        self.base = "https://generativelanguage.googleapis.com/v1beta"
+        self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
+        self._sleep = time.sleep
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(timeout=120, follow_redirects=False, transport=self.transport,
+                            headers={"x-goog-api-key": self.key, "User-Agent": "SubSyncPro/1.0", "content-type": "application/json"})
+
+    def usage(self) -> Usage:            # o Google não expõe consumo: a quota vê-se no AI Studio
+        return Usage(0, 0)
+
+    def _call(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str]) -> list[str] | None:
+        """Um pedido. Devolve a lista traduzida, ou None se recusada/inválida (o chamador subdivide)."""
+        system = (f"You are a professional subtitle translator. Translate each item from {SRC_NAMES.get(source or '', 'the source language')} into {LANG_NAMES[target]}. "
+                  "The items are consecutive subtitle lines of one film, in order; use neighbouring lines for context, pronouns and tone, but translate EACH item separately. "
+                  "Rules: return a JSON array of strings with EXACTLY the same number of items, same order; never merge, split, drop or add items; keep HTML tags such as <i></i> and "
+                  "line breaks («\n») in place; keep names, numbers and sound-effect markers; keep it concise and natural for on-screen reading; do not add notes or explanations.")
+        user = {"previous_lines_for_context_only": ctx[-3:], "items_to_translate": items}
+        body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": json.dumps(user, ensure_ascii=False)}]}],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
+                                     "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}},
+                "safetySettings": self.SAFETY}
+        for attempt in range(4):
+            try:
+                r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
+            except httpx.HTTPError as e:
+                if attempt == 3:
+                    raise DeepLError(f"Sem ligação ao Gemini: {type(e).__name__}") from e
+                self._sleep(2 * (attempt + 1))
+                continue
+            if r.status_code in (429, 500, 503) and attempt < 3:
+                self._sleep(4 * (attempt + 1))
+                continue
+            break
+        if r.status_code in (400, 401, 403):
+            msg = ""
+            try:
+                msg = r.json().get("error", {}).get("message", "")[:160]
+            except ValueError:
+                pass
+            raise DeepLError(f"O Gemini recusou o pedido ({r.status_code}): {msg or 'verifique a chave e o modelo'}", auth=r.status_code in (401, 403))
+        if r.status_code == 404:
+            raise DeepLError(f"Modelo «{self.model}» não encontrado (Definições → Idiomas → modelo Gemini).")
+        if r.status_code == 429:
+            raise DeepLError("Quota/limite de pedidos do Gemini atingido. Tente mais tarde.", quota=True)
+        if r.status_code >= 400:
+            raise DeepLError(f"Gemini respondeu HTTP {r.status_code}.")
+        try:
+            j = r.json()
+            cand = (j.get("candidates") or [None])[0]
+            if not cand or (j.get("promptFeedback") or {}).get("blockReason") or cand.get("finishReason") in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"):
+                return None
+            data = json.loads("".join(p.get("text", "") for p in cand["content"]["parts"]))
+            out = data["translations"] if isinstance(data, dict) else data
+        except (ValueError, KeyError, TypeError):
+            return None
+        if not isinstance(out, list) or len(out) != len(items) or not all(isinstance(x, str) for x in out):
+            return None
+        return [x.strip() for x in out]
+
+    def _chunk(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str], depth: int = 0) -> list[str]:
+        res = self._call(c, items, target, source, ctx)
+        if res is not None and all(t.strip() or not o.strip() for t, o in zip(res, items)):
+            return res
+        if len(items) == 1:
+            self.untranslated += 1       # recusada/inválida mesmo sozinha: fica no original (e é contado)
+            return [items[0]]
+        mid = len(items) // 2
+        return self._chunk(c, items[:mid], target, source, ctx, depth + 1) + self._chunk(c, items[mid:], target, source, ctx + items[:mid], depth + 1)
+
+    def translate(self, texts: list[str], target: str, source: str | None = None, progress: Callable[[int, int], None] | None = None) -> list[str]:
+        if target not in LANG_NAMES:
+            raise DeepLError(f"Idioma de destino não suportado: {target}")
+        self.untranslated = 0
+        out: list[str] = []
+        chunks = [texts[i:i + GEMINI_CHUNK] for i in range(0, len(texts), GEMINI_CHUNK)]
+        with self._client() as c:
+            for n, ch in enumerate(chunks):
+                out += self._chunk(c, ch, target, source, texts[max(0, len(out) - 3):len(out)])
+                if progress:
+                    progress(n + 1, len(chunks))
+        if texts and self.untranslated > max(3, len(texts) * 0.03):
+            raise DeepLError(f"O Gemini recusou ou falhou {self.untranslated} de {len(texts)} falas (>3 %): tradução rejeitada para não instalar uma legenda incompleta.")
+        return out
+
+
 # ---- segmentação das falas ------------------------------------------------------
 
 _DASH = re.compile(r"^\s*[-–—]\s*")
@@ -145,7 +248,7 @@ def translatable(text: str) -> bool:
     return bool(text.strip()) and not _NOLETTER.match(text)
 
 
-def translate_cues(cues: list[Cue], target: str, source: str | None, deepl: DeepL,
+def translate_cues(cues: list[Cue], target: str, source: str | None, deepl: "DeepL | Gemini",
                    progress: Callable[[int, int], None] | None = None) -> tuple[list[Cue], int]:
     """Devolve (eventos traduzidos com os MESMOS tempos, nº de caracteres enviados)."""
     plan: list[tuple[int, list[int] | None, bool]] = []   # por cue: índices dos segmentos no lote
