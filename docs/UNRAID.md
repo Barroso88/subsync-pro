@@ -6,7 +6,7 @@
 
 ## Opção 0 — Template Unraid (mais simples)
 
-A imagem é publicada automaticamente em `ghcr.io/barroso88/subsync-pro:latest` (amd64 e arm64) a cada push para `main`.
+A imagem é publicada automaticamente em `ghcr.io/barroso88/subsync-pro:latest` (amd64) a cada push para `main`; a imagem arm64 só é construída em versões (tags `v*`) ou manualmente (Actions → Docker image → Run workflow → arm64).
 
 1. No Unraid: **Docker → Add Container → Template** e, em *Template repositories*, ou simplesmente cole o conteúdo de [`unraid/subsync-pro.xml`](../unraid/subsync-pro.xml) em `/boot/config/plugins/dockerMan/templates-user/subsync-pro.xml` e escolha **subsync-pro** na lista de templates.
 2. Ajuste os caminhos das shares e defina a palavra-passe. **Apply**.
