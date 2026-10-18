@@ -593,6 +593,8 @@ class App:
     def translation_test(self) -> dict:
         """Uma tradução mínima para confirmar chave e modelo (consome uma fração de pedido)."""
         eng = self._deepl()
+        if isinstance(eng, Gemini):
+            eng.timeout, eng.deadline = 40.0, time.monotonic() + 90.0       # o teste não pode ficar minutos pendurado: falha com diagnóstico
         src = ["Good morning, how are you?", "Come on, we've got to get out of here!", "I can't believe you did that to me.",
                "Mind the gap, the bus is leaving.", "Don't be silly, give me your phone."]       # cumprimento, gíria, tratamento, vocabulário PT/BR (ecrã, autocarro, telemóvel)
         try:
@@ -600,6 +602,7 @@ class App:
         except DeepLError as e:
             raise ServiceError(str(e), 502)
         return {"ok": True, "engine": self._engine_name(), "model": getattr(eng, "model", None), "sample": out[0] if out else "",
+                "stats": getattr(eng, "stats", None),
                 "pairs": [{"src": a, "out": b} for a, b in zip(src, out)]}
 
     def gemini_models(self) -> dict:

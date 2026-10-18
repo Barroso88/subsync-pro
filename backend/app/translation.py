@@ -138,9 +138,12 @@ class Gemini:
         self._thinking = True           # tenta desligar o «pensar» do modelo (mais rápido); recua se o modelo o rejeitar
         self._inline: bool | None = None    # None = automático (Gemma); True = instruções dentro da mensagem e JSON lido do texto
         self._last_call = 0.0
+        self.timeout = 120.0                 # por pedido
+        self.deadline: float | None = None   # instante limite (time.monotonic) para o conjunto, usado no «Testar»
+        self.stats = {"requests": 0, "rate_limited": 0, "invalid": 0, "slowest": 0.0}
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(timeout=120, follow_redirects=False, transport=self.transport,
+        return httpx.Client(timeout=httpx.Timeout(self.timeout, connect=15.0), follow_redirects=False, transport=self.transport,
                             headers={"x-goog-api-key": self.key, "User-Agent": "SubSyncPro/1.0", "content-type": "application/json"})
 
     def usage(self) -> Usage:            # o Google não expõe consumo: a quota vê-se no AI Studio
@@ -215,21 +218,34 @@ class Gemini:
         for attempt in range(5):
             gap = self._min_interval() - (time.monotonic() - self._last_call)
             if gap > 0:
+                self._time_check(gap)
                 self._sleep(gap)            # respeita o limite de tokens por minuto (Gemma: 16K/min no escalão gratuito)
-            self._last_call = time.monotonic()
+            self._time_check()
+            self._last_call = t0 = time.monotonic()
             try:
                 r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
+                self.stats["requests"] += 1
+                self.stats["slowest"] = max(self.stats["slowest"], time.monotonic() - t0)
+            except httpx.TimeoutException:
+                self.stats["requests"] += 1
+                self.stats["slowest"] = max(self.stats["slowest"], time.monotonic() - t0)
+                self._time_check(self.timeout)
+                if attempt >= 1:
+                    raise DeepLError(f"O Gemini não respondeu a tempo ({self._stats_text()}).")
+                continue
             except httpx.HTTPError as e:
                 if attempt == 3:
                     raise DeepLError(f"Sem ligação ao Gemini: {type(e).__name__}") from e
                 self._sleep(2 * (attempt + 1))
                 continue
             if r.status_code == 429:
+                self.stats["rate_limited"] += 1
                 kind, delay = self._rate_info(r)
                 if kind == "day":
                     raise DeepLError(f"Limite diário de pedidos do Gemini esgotado para o modelo «{self.model}» (escalão gratuito). Tente amanhã, ative o faturamento "
                                      "ou escolha um modelo com limite diário maior (ex.: um «flash-lite»; veja Fornecedores → Listar modelos).", quota=True)
                 if attempt < 4:
+                    self._time_check(delay)
                     self._sleep(delay)          # limite por minuto: espera o que o Google indica (ou 15 s) e repete
                     continue
             elif r.status_code in (500, 503) and attempt < 3:
@@ -276,6 +292,15 @@ class Gemini:
             return None
         return [x.strip() for x in out]
 
+    def _stats_text(self) -> str:
+        s = self.stats
+        return f"{s['requests']} pedidos, {s['rate_limited']} com limite de taxa (429), {s['invalid']} respostas inválidas, o mais lento {s['slowest']:.0f} s"
+
+    def _time_check(self, wait: float = 0.0) -> None:
+        if self.deadline is not None and time.monotonic() + wait > self.deadline:
+            raise DeepLError(f"Tempo de teste excedido ({self._stats_text()}). O modelo «{self.model}» está demasiado lento ou a ser limitado; "
+                             "experimente outro (ex.: um «flash-lite») em Fornecedores → Listar modelos.")
+
     def _is_inline(self) -> bool:
         return self._inline if self._inline is not None else self.model.lower().startswith("gemma")
 
@@ -310,6 +335,8 @@ class Gemini:
 
     def _chunk(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str], depth: int = 0) -> list[str]:
         res = self._call(c, items, target, source, ctx)
+        if res is None:
+            self.stats["invalid"] += 1
         if res is not None and all(t.strip() or not o.strip() for t, o in zip(res, items)):
             return res
         if len(items) == 1:

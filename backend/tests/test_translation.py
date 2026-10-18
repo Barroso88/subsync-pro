@@ -376,3 +376,17 @@ def test_unknown_model_falls_back_to_inline_when_system_instructions_rejected():
     assert g.translate(["a", "b"], "pt-BR", "en") == ["PT:a", "PT:b"] and seen == ["sys", "inline"]
     g.translate(["c"], "pt-BR", "en")
     assert seen[-1] == "inline" and seen.count("sys") == 1                                   # lembra-se
+
+
+def test_gemini_test_has_deadline_and_reports_diagnostics():
+    import time as _t
+    sleeps = []
+
+    def limited(req):
+        return httpx.Response(429, json={"error": {"message": "rate", "details": [{"@type": "x.RetryInfo", "retryDelay": "30s"}]}})
+    g = Gemini("GKEY", "gemma-4-31b-it", httpx.MockTransport(limited))
+    g._sleep = sleeps.append
+    g.deadline = _t.monotonic() + 20                                  # a espera de 31 s não cabe no prazo
+    with pytest.raises(DeepLError) as e:
+        g.translate(["x"], "pt-PT", "en")
+    assert "Tempo de teste excedido" in str(e.value) and "1 com limite de taxa" in str(e.value) and not sleeps

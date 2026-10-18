@@ -114,8 +114,8 @@ function TranslationCard() {
     onError: (e: Error) => toast("bad", e.message),
   });
   const test = useMutation({
-    mutationFn: () => api.post<{ sample: string; model?: string; pairs?: { src: string; out: string }[] }>("/translation/test"),
-    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona${r.model ? ` (modelo ${r.model})` : ""}. Reveja a qualidade em pt-PT:`, pairs: r.pairs }),
+    mutationFn: () => api.post<{ sample: string; model?: string; stats?: { requests: number; rate_limited: number; invalid: number; slowest: number }; pairs?: { src: string; out: string }[] }>("/translation/test"),
+    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona${r.model ? ` (modelo ${r.model})` : ""}. Reveja a qualidade em pt-PT.${r.stats ? ` (${r.stats.requests} pedidos, o mais lento ${Math.round(r.stats.slowest)} s${r.stats.rate_limited ? `, ${r.stats.rate_limited} limitados (429)` : ""}${r.stats.invalid ? `, ${r.stats.invalid} respostas inválidas` : ""})` : ""}`, pairs: r.pairs }),
     onError: (e: Error) => setTestMsg({ ok: false, text: e.message }),
   });
   const models = useMutation({
