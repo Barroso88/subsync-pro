@@ -31,7 +31,7 @@ from .providers.registry import PROVIDERS
 from .safepaths import PathSecurityError, is_within, require_within, sanitize_filename
 from .scanner import Scanner, ScanAborted
 from .settings import Settings
-from .subtitles.parser import ParsedSub, parse_bytes, decode_bytes, parse_srt
+from .subtitles.parser import MAX_SUB_BYTES, ParsedSub, parse_bytes, decode_bytes, parse_srt
 from . import subtitle_tools as st
 from .translation import LANG_NAMES, TARGETS, DeepL, DeepLError, Gemini, count_chars, to_srt, translate_cues
 from .util import add_event, log, now, scrub
@@ -545,6 +545,53 @@ class App:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
             add_event(self.db, "download", f"Falhou ({r.provider} #{r.file_id}): {e}", "error", media_id)
             raise ServiceError(str(e), getattr(e, "status", 502 if isinstance(e, ProviderError) else 422))
+        except Exception as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
+            raise
+
+    def upload_subtitle(self, media_id: int, filename: str, data: bytes, lang: str | None = None, forced: bool = False, hi: bool = False) -> dict:
+        """Legenda do próprio utilizador: validada, avaliada com a mesma prova (referência) e deixada em «por confirmar» (staging); nada é escrito na biblioteca."""
+        from .evaluator import Evaluation, Factor
+        from .languages import detect_language
+        from .naming import parse_subtitle_name
+        from .subtitles.parser import analyze
+        media = self.media_dict(media_id)
+        filename = sanitize_filename(os.path.basename(filename or "legenda.srt")) or "legenda.srt"
+        if not data:
+            raise ServiceError("Ficheiro vazio.", 422)
+        if len(data) > MAX_SUB_BYTES:
+            raise ServiceError("Ficheiro demasiado grande (máx. 8 MB).", 413)
+        name = parse_subtitle_name(Path(filename))
+        chosen = normalize_lang(lang) if lang and lang != "auto" else None
+        r = SubtitleResult(provider="upload", file_id=st.sha1(data)[:16], language=chosen or name.lang, release=Path(filename).stem, file_name=filename,
+                           forced=bool(forced or name.forced), hearing_impaired=bool(hi or name.hi), format=Path(filename).suffix.lstrip(".").lower() or "srt", found_by="enviada por si")
+        did = self.db.execute(
+            "INSERT INTO downloads(media_id,provider,provider_file_id,lang,release,file_name,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (media_id, "upload", r.file_id, r.language, r.release[:200], filename[:200], "preparing", now())).lastrowid
+        try:
+            v = validate_download(filename, data, media)
+            an = analyze(v.parsed, media.get("duration"), size=len(data))
+            detected, conf = detect_language(v.parsed.text)
+            lang_final = r.language
+            ev = Evaluation(40, "user", "not_confirmed", [Factor("Enviada manualmente por si (sem avaliação de um fornecedor)", 0, "info")])
+            if not lang_final and detected:
+                lang_final = detected
+                ev.notes.append(f"Idioma «{detected}» estimado pelo conteúdo (não o indicou): confirme.")
+            elif lang_final in (None, "pt") and detected in ("pt-PT", "pt-BR") and conf >= 0.5:
+                lang_final = detected
+                ev.notes.append(f"Variante «{detected}» estimada pelo conteúdo.")
+            elif lang_final and detected and conf >= 0.5 and normalize_lang(detected) != lang_final and not (lang_final.startswith("pt") and detected.startswith("pt")):
+                ev.factors.append(Factor(f"O idioma indicado («{lang_final}») não parece corresponder ao conteúdo («{detected}»)", -15, "negative"))
+            elif lang_final in ("pt-PT", "pt-BR") and detected in ("pt-PT", "pt-BR") and detected != lang_final and conf >= 0.5:
+                ev.factors.append(Factor(f"Indicou «{lang_final}» mas o conteúdo parece «{detected}» (heurística): confirme antes de instalar", -10, "negative"))
+            r.language = lang_final
+            ev = evaluate_content(ev, media, v.parsed, an, self._reference_for(media, lang_final))
+            ev.notes.append("Enviada por si: a app só valida o formato e compara tempos com uma referência, se existir. Não avalia a qualidade do texto.")
+            add_event(self.db, "download", f"Legenda enviada pelo utilizador: {filename}", "info", media_id)
+            return self._finish_prepare(did, media, r, lang_final, v, ev, an, {"upload": {"filename": filename, "detected_lang": detected}})
+        except InvalidDownload as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
+            raise ServiceError(str(e), 422)
         except Exception as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
             raise

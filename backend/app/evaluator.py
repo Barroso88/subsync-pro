@@ -19,6 +19,7 @@ from .providers.base import SubtitleResult
 from .subtitles.parser import AlignResult, Analysis, ParsedSub, align_with_reference, analyze_duration, fmt_ms
 
 COMPAT = {
+    "user": "Enviada por si",
     "hash": "Confirmada por hash",
     "probable": "Provável (metadados)",
     "weak": "Correspondência fraca",

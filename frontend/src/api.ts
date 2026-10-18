@@ -17,6 +17,17 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   }
   return r.json() as Promise<T>;
 }
+/** Envia bytes (um ficheiro) como corpo do pedido; os parâmetros vão no URL. */
+export async function uploadFile<T>(url: string, file: File): Promise<T> {
+  const r = await fetch("/api" + url, { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" }, credentials: "same-origin" });
+  if (r.status === 401) window.dispatchEvent(new Event("subsync:unauth"));
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* ignore */ }
+    throw new ApiError(r.status, msg);
+  }
+  return r.json() as Promise<T>;
+}
 export const api = {
   get: <T,>(u: string) => req<T>("GET", u),
   post: <T,>(u: string, b?: unknown) => req<T>("POST", u, b ?? {}),
@@ -47,7 +58,7 @@ export interface Sub {
 }
 export interface Factor { label: string; points: number; kind: string }
 export interface Evaluation {
-  score: number; compat: "hash" | "probable" | "weak" | "incompatible"; compat_label: string;
+  score: number; compat: "user" | "hash" | "probable" | "weak" | "incompatible"; compat_label: string;
   sync: "validated_reference" | "not_confirmed" | "suspect" | "inconclusive"; sync_label: string;
   factors: Factor[]; duration_diff_s: number | null; notes: string[]; disclaimer: string;
   alignment: null | { reference: string; offset_ms: number; match_ratio: number; drift_ms: number; events_compared: number };

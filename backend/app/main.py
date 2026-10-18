@@ -451,6 +451,16 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def translate_start(mid: int, b: TranslateIn):
         return {"job_id": core.start_translate(mid, b.result, b.target)}
 
+    @api.post("/media/{mid}/upload")
+    async def upload_subtitle(mid: int, request: Request, filename: str = Query(..., max_length=255), lang: str | None = Query(None, max_length=16),
+                              forced: bool = False, hi: bool = False):
+        """Corpo = bytes do ficheiro (sem multipart). Máx. 8 MB."""
+        from .subtitles.parser import MAX_SUB_BYTES
+        if int(request.headers.get("content-length") or 0) > MAX_SUB_BYTES + 1024:
+            raise HTTPException(413, "Ficheiro demasiado grande (máx. 8 MB)")
+        data = await request.body()
+        return core.upload_subtitle(mid, filename, data, lang, forced, hi)
+
     class TranslateEmbeddedIn(BaseModel):
         subtitle_id: int
         target: str

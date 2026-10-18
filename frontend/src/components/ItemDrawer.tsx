@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench } from "lucide-react";
-import { api, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
+import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench, Upload } from "lucide-react";
+import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
 import { useMeta } from "../hooks";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
@@ -127,14 +127,64 @@ function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
   );
 }
 
+// Enviar uma legenda do próprio utilizador: valida, compara com uma referência (se existir) e deixa em «por confirmar»
+function UploadSubtitle({ d }: { d: Detail }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const meta = useMeta();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get<Record<string, any>>("/settings") });
+  const [file, setFile] = useState<File | null>(null);
+  const [lang, setLang] = useState("auto");
+  const [forced, setForced] = useState(false);
+  const [hi, setHi] = useState(false);
+  const [prepared, setPrepared] = useState<Download | null>(null);
+  const langs: { code: string; name: string }[] = meta.data?.languages ?? [];
+  const prio: string[] = settings.data ? settings.data.languages.map((l: any) => l.code) : [];
+  const ordered = [...langs.filter((l) => prio.includes(l.code)), ...langs.filter((l) => !prio.includes(l.code))];
+  const send = useMutation({
+    mutationFn: () => uploadFile<Download>(`/media/${d.id}/upload` + `?filename=${encodeURIComponent(file!.name)}&lang=${encodeURIComponent(lang)}&forced=${forced}&hi=${hi}`, file!),
+    onSuccess: (r) => { setPrepared(r); setFile(null); qc.invalidateQueries({ queryKey: ["downloads"] }); },
+    onError: (e: Error) => toast("bad", e.message),
+  });
+  return (
+    <>
+      <label className={cx("btn-ghost cursor-pointer", !d.library_writable && "opacity-50 pointer-events-none")} title={d.library_writable ? "" : "Biblioteca só de leitura"}>
+        <Upload size={14} />Carregar legenda
+        <input type="file" className="hidden" accept=".srt,.ass,.ssa,.vtt,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setFile(f); setLang("auto"); setForced(false); setHi(false); } e.target.value = ""; }} />
+      </label>
+      <Modal open={!!file} onClose={() => setFile(null)} title="Carregar legenda"
+        footer={<><button className="btn-ghost" onClick={() => setFile(null)}>Cancelar</button>
+          <button className="btn-primary" disabled={send.isPending} onClick={() => send.mutate()}>{send.isPending && <Loader2 size={14} className="animate-spin" />}Enviar e pré-visualizar</button></>}>
+        <div className="space-y-3 text-sm">
+          <div>Ficheiro: <b className="break-all font-mono text-xs">{file?.name}</b> <span className="text-dim">({file ? fmtSize(file.size) : ""})</span></div>
+          <div className="flex items-center gap-2 flex-wrap"><span className="text-mute">Idioma</span>
+            <select className="input !w-auto" value={lang} onChange={(e) => setLang(e.target.value)}>
+              <option value="auto">Detetar automaticamente</option>{ordered.map((l) => <option key={l.code} value={l.code}>{l.name} ({l.code})</option>)}</select></div>
+          <div className="flex gap-4 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={forced} onChange={(e) => setForced(e.target.checked)} />Forçada (só partes estrangeiras)</label>
+            <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={hi} onChange={(e) => setHi(e.target.checked)} />Para surdos (SDH/HI)</label>
+          </div>
+          <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
+            <div>• O ficheiro é validado (SRT, ASS, SSA, VTT ou um .zip com uma legenda) e <b>não é gravado na biblioteca</b> até confirmar.</div>
+            <div>• Se existir outra legenda do filme, compara os tempos e diz se coincidem; se já existir uma no mesmo idioma, <b>nunca é substituída em silêncio</b>.</div>
+            <div>• O nome final segue o padrão do Plex (<span className="font-mono">Filme.pt-PT.srt</span>).</div>
+          </div>
+        </div>
+      </Modal>
+      <PreviewModal dl={prepared} onClose={() => setPrepared(null)} writable={d.library_writable} onDone={() => { qc.invalidateQueries({ queryKey: ["media", d.id] }); qc.invalidateQueries(); }} />
+    </>
+  );
+}
+
 const ISSUE_TONE: Record<string, "bad" | "warn" | "neutral"> = { error: "bad", warning: "warn", info: "neutral" };
 
 function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   const meta = useMeta();
   const [tools, setTools] = useState<Sub | null>(null);
-  if (!d.subtitles.length) return <Empty icon={<FileText size={20} />} title="Sem legendas" hint="Não foram encontradas legendas externas nem embutidas para este vídeo." action={<button className="btn-primary" onClick={onSearch}><Search size={14} />Procurar online</button>} />;
+  if (!d.subtitles.length) return <Empty icon={<FileText size={20} />} title="Sem legendas" hint="Não foram encontradas legendas externas nem embutidas para este vídeo." action={<div className="flex gap-2 flex-wrap justify-center"><button className="btn-primary" onClick={onSearch}><Search size={14} />Procurar online</button><UploadSubtitle d={d} /></div>} />;
   return (
     <div className="space-y-2.5">
+      <div className="flex justify-end"><UploadSubtitle d={d} /></div>
       {d.subtitles.map((s) => (
         <div key={s.id} className="card p-3.5 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">

@@ -19,6 +19,7 @@ export function LangChips({ item, wanted }: { item: Pick<Item, "covered" | "miss
 
 export function CompatBadge({ ev }: { ev: Evaluation }) {
   const m = {
+    user: { tone: "accent" as const, icon: <Check size={11} /> },
     hash: { tone: "ok" as const, icon: <Hash size={11} /> },
     probable: { tone: "info" as const, icon: <Check size={11} /> },
     weak: { tone: "warn" as const, icon: <HelpCircle size={11} /> },
