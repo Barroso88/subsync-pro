@@ -135,8 +135,9 @@ class Gemini:
         self.base = "https://generativelanguage.googleapis.com/v1beta"
         self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
         self._sleep = time.sleep
-        self._thinking = True           # tenta desligar o «pensar» do modelo (mais rápido); recua se o modelo o rejeitar
-        self._inline: bool | None = None    # None = automático (Gemma); True = instruções dentro da mensagem e JSON lido do texto
+        # escada de compatibilidade: 0 = completo (instrução de sistema + JSON + sem raciocínio + sem filtros); 1 = sem «thinkingConfig»;
+        # 2 = sem «safetySettings»; 3 = instruções na mensagem e JSON lido do texto. Sobe quando o modelo responde 400 e lembra-se.
+        self._level = 0
         self._last_call = 0.0
         self.timeout = 120.0                 # por pedido
         self.deadline: float | None = None   # instante limite (time.monotonic) para o conjunto, usado no «Testar»
@@ -203,17 +204,21 @@ class Gemini:
                   "line breaks («\n») in place; keep names, numbers and sound-effect markers; keep it concise and natural for on-screen reading; do not add notes or explanations.")
         user = {"previous_lines_for_context_only": ctx[-3:], "items_to_translate": items}
         inline = self._is_inline()
+        safety = [] if self._level >= 2 else self.SAFETY
         if inline:
             # modelos sem «instruções de sistema» nem modo JSON (ex.: Gemma): tudo na mensagem, resposta lida do texto
             prompt = (system + ' Respond with ONLY a JSON object of the form {"translations": ["...", "..."]} and nothing else (no markdown, no commentary).\n\nINPUT:\n'
                       + json.dumps(user, ensure_ascii=False))
-            body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}, "safetySettings": self.SAFETY}
+            body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
+            if safety:
+                body["safetySettings"] = safety
         else:
             body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": json.dumps(user, ensure_ascii=False)}]}],
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
-                                         "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}},
-                    "safetySettings": self.SAFETY}
-            if self._thinking:
+                                         "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}}}
+            if safety:
+                body["safetySettings"] = safety
+            if self._level == 0:
                 body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         for attempt in range(5):
             gap = self._min_interval() - (time.monotonic() - self._last_call)
@@ -252,19 +257,30 @@ class Gemini:
                 self._sleep(4 * (attempt + 1))
                 continue
             break
-        if r.status_code == 400 and not inline and self._thinking and "think" in r.text.lower():
-            self._thinking = False       # este modelo não aceita desligar o raciocínio: repete sem isso (e lembra-se)
-            return self._call(c, items, target, source, ctx)
-        if r.status_code == 400 and not inline and re.search(r"developer instruction|system instruction|mime|json mode|response_?schema|schema", r.text, re.I):
-            self._inline = True          # o modelo não suporta instruções de sistema / modo JSON: passa ao modo «na mensagem» (e lembra-se)
-            return self._call(c, items, target, source, ctx)
+        if r.status_code == 400 and self._level < 3:
+            low = r.text.lower()
+            if re.search(r"developer instruction|system instruction|mime|json mode|response_?schema|schema", low):
+                self._level = 3                          # sem instruções de sistema / modo JSON: tudo na mensagem
+            elif "think" in low:
+                self._level = max(self._level, 1)        # não aceita desligar o raciocínio
+            elif "safety" in low:
+                self._level = max(self._level, 2)
+            elif "invalid argument" in low or "invalid_argument" in low:
+                self._level += 1                         # 400 genérico: simplifica o pedido passo a passo
+            else:
+                self._level = 99
+            if self._level < 99:
+                return self._call(c, items, target, source, ctx)
+            self._level = 3
         if r.status_code in (400, 401, 403):
             msg = ""
             try:
                 msg = r.json().get("error", {}).get("message", "")[:160]
             except ValueError:
                 pass
-            raise DeepLError(f"O Gemini recusou o pedido ({r.status_code}): {msg or 'verifique a chave e o modelo'}", auth=r.status_code in (401, 403))
+            raise DeepLError(f"O Gemini recusou o pedido ({r.status_code}) com o modelo «{self.model}»: {msg or 'verifique a chave e o modelo'}"
+                             f"{' (já tentado sem filtros, sem «thinking» e com instruções na mensagem)' if r.status_code == 400 and self._level >= 3 else ''}",
+                             auth=r.status_code in (401, 403))
         if r.status_code == 404:
             Gemini._AUTO.pop(self.key, None)
             hint = ""
@@ -302,7 +318,7 @@ class Gemini:
                              "experimente outro (ex.: um «flash-lite») em Fornecedores → Listar modelos.")
 
     def _is_inline(self) -> bool:
-        return self._inline if self._inline is not None else self.model.lower().startswith("gemma")
+        return self._level >= 3 or self.model.lower().startswith("gemma")
 
     def _min_interval(self) -> float:
         return 8.0 if self.model.lower().startswith("gemma") else 0.0     # ~7 pedidos/min ≈ 14K tokens/min (limite gratuito do Gemma: 16K)

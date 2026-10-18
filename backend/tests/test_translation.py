@@ -390,3 +390,26 @@ def test_gemini_test_has_deadline_and_reports_diagnostics():
     with pytest.raises(DeepLError) as e:
         g.translate(["x"], "pt-PT", "en")
     assert "Tempo de teste excedido" in str(e.value) and "1 com limite de taxa" in str(e.value) and not sleeps
+
+
+def test_generic_400_invalid_argument_simplifies_request_step_by_step():
+    seen = []
+
+    def h(req: httpx.Request):
+        body = json.loads(req.content)
+        feats = ("thinking" if "thinkingConfig" in body["generationConfig"] else "", "safety" if "safetySettings" in body else "", "sys" if "systemInstruction" in body else "")
+        seen.append(feats)
+        if feats[0] or feats[1]:                                                            # o modelo só aceita o pedido sem thinkingConfig NEM safetySettings
+            return httpx.Response(400, json={"error": {"status": "INVALID_ARGUMENT", "message": "Request contains an invalid argument."}})
+        items = json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]
+        return gem_resp([f"PT:{t}" for t in items])
+    g = Gemini("GKEY", "gemini-qualquer", httpx.MockTransport(h))
+    assert g.translate(["a"], "pt-PT", "en") == ["PT:a"]
+    assert seen == [("thinking", "safety", "sys"), ("", "safety", "sys"), ("", "", "sys")]       # sobe um degrau de cada vez; mantém a instrução de sistema
+    g.translate(["b"], "pt-PT", "en")
+    assert seen[-1] == ("", "", "sys") and len(seen) == 4                                         # lembra-se do nível
+
+    always = Gemini("GKEY", "gemini-teimoso", httpx.MockTransport(lambda r: httpx.Response(400, json={"error": {"message": "Request contains an invalid argument."}})))
+    with pytest.raises(DeepLError) as e:
+        always.translate(["a"], "pt-PT", "en")
+    assert "gemini-teimoso" in str(e.value) and "já tentado" in str(e.value)                      # a mensagem diz o modelo e o que foi tentado
