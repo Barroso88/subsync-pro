@@ -32,3 +32,17 @@ def test_duplicates_listed_resolved_with_backup_and_revalidated(setup):
     assert out["moved"] == 0 and len(out["skipped"]) == 2 and setup.ptfile.exists()
     _scan(setup)
     assert setup.get("/api/subtitles/duplicates").json()["total"] == 0
+
+
+def test_same_content_with_different_variant_names_keeps_the_one_matching_content(setup):
+    from tests.conftest import PT_BR_TEXT, make_srt
+    d = setup.dir
+    br = make_srt(120, 30_000, lang="pt-PT", pool=PT_BR_TEXT)
+    (d / "Filme Teste (2024).pt-BR.srt").write_text(br, "utf-8")
+    (d / "Filme Teste (2024).pt-PT.srt").write_text(br, "utf-8")           # cópia mal etiquetada: conteúdo pt-BR com nome pt-PT
+    _scan(setup)
+    g = setup.get("/api/subtitles/duplicates").json()
+    grp = g["groups"][0]
+    assert grp["lang_conflict"] and g["conflicts"] == 1 and g["removable"] == 0 and grp["content_lang"] == "pt-BR"
+    assert next(f for f in grp["files"] if f["keep"])["name"].endswith("pt-BR.srt")
+    assert setup.get("/api/subtitles/duplicates/all").json()["items"] == []                # não entra em «resolver todos»

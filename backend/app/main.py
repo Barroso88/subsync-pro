@@ -694,13 +694,13 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @api.get("/subtitles/duplicates")
     def duplicates(q: str | None = None, limit: int = Query(100, le=500), offset: int = 0):
         g = core.duplicate_groups(q)
-        return {"total": len(g), "removable": sum(len(x["files"]) - 1 for x in g if x["deletable"]), "groups": g[offset: offset + limit]}
+        return {"total": len(g), "removable": sum(len(x["files"]) - 1 for x in g if x["deletable"] and not x["lang_conflict"]), "conflicts": sum(1 for x in g if x["lang_conflict"]), "groups": g[offset: offset + limit]}
 
     @api.get("/subtitles/duplicates/all")
     def duplicates_all(q: str | None = None):
         """Propostas (ficar/remover) de TODOS os grupos apagáveis, para «selecionar todos»."""
         return {"items": [{"keep": next(f["id"] for f in x["files"] if f["keep"]), "remove": [f["id"] for f in x["files"] if not f["keep"]]}
-                          for x in core.duplicate_groups(q) if x["deletable"]][:1000]}
+                          for x in core.duplicate_groups(q) if x["deletable"] and not x["lang_conflict"]][:1000]}
 
     @api.post("/subtitles/duplicates/resolve")
     def resolve_dups(b: ResolveDupIn):

@@ -1232,12 +1232,14 @@ class App:
     @staticmethod
     def _keep_rank(r: dict) -> tuple:
         """Menor = melhor candidata a ficar: variante explícita no nome (pt-PT/pt-BR), idioma conhecido pelo nome, SRT, a mais antiga."""
+        pt = ("pt-PT", "pt-BR")
+        wrong = r["lang"] in pt and r["detected_lang"] in pt and r["lang"] != r["detected_lang"]      # o nome diz uma variante e o conteúdo é a outra
         explicit = r["lang_source"] == "filename" and (r["lang"] or "") not in ("", "pt")
-        return (not explicit, r["lang_source"] != "filename", os.path.splitext(r["path"])[1].lower() != ".srt", r["mtime"] or 0, len(r["path"]))
+        return (wrong, not explicit, r["lang_source"] != "filename", os.path.splitext(r["path"])[1].lower() != ".srt", r["mtime"] or 0, len(r["path"]))
 
     def duplicate_groups(self, q: str | None = None) -> list[dict]:
         rows_ = self.db.query(
-            "SELECT s.id,s.path,s.lang,s.lang_source,s.size,s.mtime,s.media_id,s.library_id,s.content_hash,m.title,m.radarr_title,m.year,m.kind,m.series_title,m.season,m.episode "
+            "SELECT s.id,s.path,s.lang,s.lang_source,s.detected_lang,s.size,s.mtime,s.media_id,s.library_id,s.content_hash,m.title,m.radarr_title,m.year,m.kind,m.series_title,m.season,m.episode "
             "FROM subtitles s JOIN media_items m ON m.id=s.media_id "
             "WHERE s.kind='external' AND s.present=1 AND s.content_hash IS NOT NULL AND s.status='ok' AND (s.media_id, s.content_hash) IN "
             "(SELECT media_id, content_hash FROM subtitles WHERE kind='external' AND present=1 AND content_hash IS NOT NULL AND media_id IS NOT NULL "
@@ -1250,10 +1252,13 @@ class App:
                 "media_id": d["media_id"], "hash": d["content_hash"],
                 "title": (d["series_title"] and f"{d['series_title']} S{d['season'] or 0:02d}E{d['episode'] or 0:02d}") or (d["radarr_title"] or "").strip() or d["title"],
                 "year": d["year"], "deletable": bool(writable.get(d["library_id"])), "files": []})
-            g["files"].append({"id": d["id"], "name": os.path.basename(d["path"]), "lang": d["lang"], "lang_source": d["lang_source"], "size": d["size"], "mtime": d["mtime"], "_r": d})
+            g["files"].append({"id": d["id"], "name": os.path.basename(d["path"]), "lang": d["lang"], "lang_source": d["lang_source"], "detected_lang": d["detected_lang"], "size": d["size"], "mtime": d["mtime"], "_r": d})
         out = []
         for g in groups.values():
             best = min(g["files"], key=lambda f: self._keep_rank(f["_r"]))
+            langs = {f["lang"] for f in g["files"] if f["lang"]}
+            g["lang_conflict"] = len(langs) > 1          # ex.: «.pt-PT.srt» e «.pt-BR.srt» com o mesmo conteúdo: um deles está mal etiquetado
+            g["content_lang"] = next((f["detected_lang"] for f in g["files"] if f["detected_lang"]), None)
             for f in g["files"]:
                 f["keep"] = f is best
                 f.pop("_r")

@@ -7,8 +7,8 @@ import { SearchBox, useDebounced } from "../components/MediaBrowser";
 import { cx } from "../lib";
 
 interface File { id: number; name: string; lang: string | null; lang_source: string; size: number; mtime: number | null; keep: boolean }
-interface Group { media_id: number; hash: string; title: string; year: number | null; deletable: boolean; files: File[] }
-interface Res { total: number; removable: number; groups: Group[] }
+interface Group { lang_conflict: boolean; content_lang: string | null; media_id: number; hash: string; title: string; year: number | null; deletable: boolean; files: File[] }
+interface Res { total: number; removable: number; conflicts: number; groups: Group[] }
 interface Out { moved: number; requested: number; skipped: { id: number; reason: string }[] }
 const key = (g: Group) => `${g.media_id}:${g.hash}`;
 
@@ -48,7 +48,7 @@ export default function Duplicates() {
       <PageHeader title="Legendas duplicadas" subtitle="Ficheiros de legenda com exatamente o mesmo conteúdo no mesmo filme (por exemplo «.pt.srt» e «.pt-PT.srt»). O Plex mostra-os como duas legendas iguais."
         actions={<SearchBox value={q} onChange={setQ} placeholder="Filme ou ficheiro…" />} />
       <div className="card p-3.5 mb-4 text-xs text-mute flex gap-2.5"><AlertTriangle size={15} className="text-warn shrink-0 mt-0.5" />
-        <div>Só aparecem ficheiros <b className="text-fg">byte a byte iguais</b>. Os repetidos <b className="text-fg">vão para backup</b> (restaurável no histórico de alterações do filme); nunca se apaga definitivamente. Antes de mover, o servidor volta a comparar os dois ficheiros no disco. Por omissão fica a legenda com a variante explícita no nome (pt-PT/pt-BR); pode escolher outra.</div></div>
+        <div>Só aparecem ficheiros <b className="text-fg">byte a byte iguais</b>. Os repetidos <b className="text-fg">vão para backup</b> (restaurável no histórico de alterações do filme); nunca se apaga definitivamente. Antes de mover, o servidor volta a comparar os dois ficheiros no disco. Por omissão fica a legenda com a variante explícita no nome (pt-PT/pt-BR) e, se os nomes divergirem (ex.: «.pt-PT» e «.pt-BR» iguais), a que corresponde ao idioma real do conteúdo; pode escolher outra.</div></div>
 
       {list.isError && <ErrorBox error={list.error} retry={() => list.refetch()} />}
       {list.isLoading && <div className="space-y-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}</div>}
@@ -70,6 +70,9 @@ export default function Duplicates() {
                 <div className="font-medium truncate">{g.title}{g.year && <span className="text-dim font-normal"> ({g.year})</span>}</div>
                 {!g.deletable && <Badge tone="neutral">só leitura</Badge>}
               </div>
+              {g.lang_conflict && (
+                <div className="text-xs text-warn flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Os nomes indicam idiomas diferentes mas o conteúdo é igual{g.content_lang ? ` (parece ${g.content_lang})` : ""}: uma das duas está mal etiquetada e conta como legenda que não é. Fica a que corresponde ao conteúdo; confirme antes de mover. Não entra em «Resolver todos».</div>
+              )}
               <div className="space-y-1">
                 {g.files.map((f) => (
                   <label key={f.id} className={cx("flex items-center gap-2.5 text-xs rounded-md px-2 py-1.5", keepOf(g) === f.id ? "bg-ok/10" : "bg-s2")}>
