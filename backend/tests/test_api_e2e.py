@@ -324,3 +324,12 @@ def test_radarr_title_is_primary_title_and_searchable_and_sorts(client):
     assert client.get(f"/api/media/{mv['id']}").json()["title"] == "Os Macacos de Teste"
     # a pesquisa de legendas continua a usar o título do ficheiro/IDs
     assert client.core.media_dict(mv["id"])["title"] == "Filme Teste"
+
+
+def test_login_remember_controls_cookie_lifetime(cfg, fake_probe):
+    cfg.auth_password = "s3cret"
+    with TestClient(create_app(cfg)) as c:
+        r = c.post("/api/auth/login", json={"password": "s3cret"})                      # por omissão memoriza: cookie persistente
+        assert "max-age=15552000" in r.headers["set-cookie"].lower() and "httponly" in r.headers["set-cookie"].lower()      # 180 dias
+        r = c.post("/api/auth/login", json={"password": "s3cret", "remember": False})   # sem memorizar: cookie de sessão
+        assert "max-age" not in r.headers["set-cookie"].lower() and "samesite=strict" in r.headers["set-cookie"].lower()

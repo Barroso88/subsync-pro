@@ -116,6 +116,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
 
     class Login(BaseModel):
         password: str
+        remember: bool = True          # «memorizar neste dispositivo»: cookie persistente (180 dias); sem isto, cookie de sessão (fecha com o browser)
 
     @api.get("/auth/status")
     def auth_status(request: Request):
@@ -131,7 +132,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         if not hmac.compare_digest(body.password, cfg.auth_password):
             limiter.fail(ip)
             raise HTTPException(401, "Palavra-passe incorreta")
-        response.set_cookie(COOKIE, expected, httponly=True, samesite="strict", max_age=30 * 86400)
+        response.set_cookie(COOKIE, expected, httponly=True, samesite="strict", max_age=180 * 86400 if body.remember else None)
         return {"ok": True}
 
     @api.post("/auth/logout")

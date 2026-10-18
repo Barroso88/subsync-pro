@@ -65,7 +65,7 @@ Abra `http://<servidor>:8484` → **Definições → Bibliotecas → Adicionar**
 |---|---|---|
 | `SUBSYNC_DATA_DIR` | `/data` | Config, BD, logs, staging, backups, posters |
 | `SUBSYNC_ALLOWED_ROOTS` | `/media` | Raízes (separadas por `:`) dentro das quais se podem registar bibliotecas |
-| `SUBSYNC_AUTH_PASSWORD` | _(vazio)_ | Ativa login por palavra-passe (**recomendado**) |
+| `SUBSYNC_AUTH_PASSWORD` | _(vazio)_ | Ativa login por palavra-passe (**recomendado**); o ecrã de login tem «Memorizar neste dispositivo» (cookie de 180 dias) e é compatível com gestores de palavras-passe |
 | `SUBSYNC_MAX_JOBS` | `2` | Tarefas em background em simultâneo |
 | `SUBSYNC_FFPROBE_WORKERS` | `4` | Sondas FFprobe em paralelo por pasta |
 | `SUBSYNC_LOG_LEVEL` | `INFO` | Logs JSON estruturados (segredos são mascarados) |
