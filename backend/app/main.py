@@ -645,6 +645,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         langs = [l["code"] for l in core.settings.get("languages")]
         return {"missing": sum(1 for v in covs.values() if v["missing"]),
                 "missing_by_lang": {c: sum(1 for v in covs.values() if c not in v["covered"]) for c in langs},
+                "duplicate_subtitles": core.duplicate_count(),
                 "empty_subtitles": core.db.scalar("SELECT COUNT(*) FROM subtitles WHERE kind='external' AND status='empty' AND present=1"),
                 "active_jobs": core.db.scalar("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"),
                 "pending_downloads": core.db.scalar("SELECT COUNT(*) FROM downloads WHERE status='prepared'")}
@@ -682,6 +683,28 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @api.post("/subtitle-edits/{eid}/restore")
     def restore_edit(eid: int, b: RestoreIn):
         return core.restore_edit(eid, b.force)
+
+    class DupItem(BaseModel):
+        keep: int
+        remove: list[int] = Field(max_length=50)
+
+    class ResolveDupIn(BaseModel):
+        items: list[DupItem] = Field(max_length=1000)
+
+    @api.get("/subtitles/duplicates")
+    def duplicates(q: str | None = None, limit: int = Query(100, le=500), offset: int = 0):
+        g = core.duplicate_groups(q)
+        return {"total": len(g), "removable": sum(len(x["files"]) - 1 for x in g if x["deletable"]), "groups": g[offset: offset + limit]}
+
+    @api.get("/subtitles/duplicates/all")
+    def duplicates_all(q: str | None = None):
+        """Propostas (ficar/remover) de TODOS os grupos apagáveis, para «selecionar todos»."""
+        return {"items": [{"keep": next(f["id"] for f in x["files"] if f["keep"]), "remove": [f["id"] for f in x["files"] if not f["keep"]]}
+                          for x in core.duplicate_groups(q) if x["deletable"]][:1000]}
+
+    @api.post("/subtitles/duplicates/resolve")
+    def resolve_dups(b: ResolveDupIn):
+        return core.resolve_duplicates([i.model_dump() for i in b.items])
 
     class ConvertBatchIn(BaseModel):
         ids: list[int] = Field(max_length=5000)

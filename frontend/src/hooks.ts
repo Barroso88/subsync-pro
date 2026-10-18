@@ -4,7 +4,7 @@ import { useToast } from "./components/ui";
 
 export const useMeta = () => useQuery({ queryKey: ["meta"], queryFn: () => api.get<Meta>("/meta"), staleTime: 60_000 });
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => api.get<Settings>("/settings") });
-export const useSidebar = () => useQuery({ queryKey: ["sidebar"], queryFn: () => api.get<{ missing: number; missing_by_lang: Record<string, number>; empty_subtitles: number; active_jobs: number; pending_downloads: number }>("/sidebar"), refetchInterval: 5000 });
+export const useSidebar = () => useQuery({ queryKey: ["sidebar"], queryFn: () => api.get<{ missing: number; missing_by_lang: Record<string, number>; empty_subtitles: number; duplicate_subtitles: number; active_jobs: number; pending_downloads: number }>("/sidebar"), refetchInterval: 5000 });
 
 export function useStartJob() {
   const qc = useQueryClient();

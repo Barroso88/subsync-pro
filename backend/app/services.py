@@ -1228,6 +1228,74 @@ class App:
         self._rescan_dir(sub)
         return {"restored": True}
 
+    # ---- legendas duplicadas (mesmo conteúdo, nomes diferentes) -----------------------
+    @staticmethod
+    def _keep_rank(r: dict) -> tuple:
+        """Menor = melhor candidata a ficar: variante explícita no nome (pt-PT/pt-BR), idioma conhecido pelo nome, SRT, a mais antiga."""
+        explicit = r["lang_source"] == "filename" and (r["lang"] or "") not in ("", "pt")
+        return (not explicit, r["lang_source"] != "filename", os.path.splitext(r["path"])[1].lower() != ".srt", r["mtime"] or 0, len(r["path"]))
+
+    def duplicate_groups(self, q: str | None = None) -> list[dict]:
+        rows_ = self.db.query(
+            "SELECT s.id,s.path,s.lang,s.lang_source,s.size,s.mtime,s.media_id,s.library_id,s.content_hash,m.title,m.radarr_title,m.year,m.kind,m.series_title,m.season,m.episode "
+            "FROM subtitles s JOIN media_items m ON m.id=s.media_id "
+            "WHERE s.kind='external' AND s.present=1 AND s.content_hash IS NOT NULL AND s.status='ok' AND (s.media_id, s.content_hash) IN "
+            "(SELECT media_id, content_hash FROM subtitles WHERE kind='external' AND present=1 AND content_hash IS NOT NULL AND media_id IS NOT NULL "
+            " GROUP BY media_id, content_hash HAVING COUNT(*)>1) ORDER BY lower(coalesce(m.series_title, nullif(m.radarr_title,''), m.title)), m.season, m.episode, s.media_id, s.path")
+        writable = {l["id"]: l["effective_write"] for l in self.libraries()}
+        groups: dict[tuple, dict] = {}
+        for r in rows_:
+            d = dict(r)
+            g = groups.setdefault((d["media_id"], d["content_hash"]), {
+                "media_id": d["media_id"], "hash": d["content_hash"],
+                "title": (d["series_title"] and f"{d['series_title']} S{d['season'] or 0:02d}E{d['episode'] or 0:02d}") or (d["radarr_title"] or "").strip() or d["title"],
+                "year": d["year"], "deletable": bool(writable.get(d["library_id"])), "files": []})
+            g["files"].append({"id": d["id"], "name": os.path.basename(d["path"]), "lang": d["lang"], "lang_source": d["lang_source"], "size": d["size"], "mtime": d["mtime"], "_r": d})
+        out = []
+        for g in groups.values():
+            best = min(g["files"], key=lambda f: self._keep_rank(f["_r"]))
+            for f in g["files"]:
+                f["keep"] = f is best
+                f.pop("_r")
+            if q and q.lower() not in (g["title"] or "").lower() and not any(q.lower() in f["name"].lower() for f in g["files"]):
+                continue
+            out.append(g)
+        return out
+
+    def duplicate_count(self) -> int:
+        return self.db.scalar("SELECT COUNT(*) FROM (SELECT 1 FROM subtitles WHERE kind='external' AND present=1 AND content_hash IS NOT NULL AND media_id IS NOT NULL "
+                              "GROUP BY media_id, content_hash HAVING COUNT(*)>1)") or 0
+
+    def resolve_duplicates(self, items: list[dict]) -> dict:
+        """items: [{keep: id, remove: [ids]}]. Cada remoção é revalidada no disco: o ficheiro a remover tem de ter EXATAMENTE os mesmos bytes
+        que o que fica (que tem de existir). Vai para backup (restaurável), nunca é apagado definitivamente."""
+        res = {"moved": 0, "skipped": [], "requested": sum(len(i.get("remove", [])) for i in items)}
+        for it in items:
+            keep = self.db.one("SELECT * FROM subtitles WHERE id=? AND kind='external' AND present=1", (it.get("keep"),))
+            for rid in dict.fromkeys(it.get("remove", [])):
+                def skip(reason: str):
+                    res["skipped"].append({"id": rid, "reason": reason})
+                r = self.db.one("SELECT * FROM subtitles WHERE id=? AND kind='external' AND present=1", (rid,))
+                if not keep or not r or r["id"] == keep["id"] or r["media_id"] != keep["media_id"]:
+                    skip("par inválido (têm de ser do mesmo filme e diferentes)")
+                    continue
+                try:
+                    kreal = require_within(keep["path"], self.writable_roots())
+                    rreal = require_within(r["path"], self.writable_roots())
+                    if st.sha1(Path(kreal).read_bytes()) != st.sha1(Path(rreal).read_bytes()):
+                        skip("o conteúdo já não é igual ao do ficheiro que fica")
+                        continue
+                except (PathSecurityError, OSError):
+                    skip("fora de uma biblioteca com escrita ativa ou ilegível")
+                    continue
+                try:
+                    self.sub_delete(rid)
+                    res["moved"] += 1
+                except ServiceError as e:
+                    skip(str(e))
+        add_event(self.db, "edit", f"Duplicados resolvidos: {res['moved']} legendas movidas para backup, {len(res['skipped'])} ignoradas.")
+        return res
+
     # ---- conversão em lote (SRT/UTF-8) ---------------------------------------------
     MAX_CONVERT_ROWS = 4000
 
