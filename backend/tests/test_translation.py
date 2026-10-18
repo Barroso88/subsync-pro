@@ -163,10 +163,20 @@ def gem_resp(texts, **extra):
     return httpx.Response(200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({"translations": texts})}]}}], **extra})
 
 
+seen_models: list[str] = []
+
+
 def gem_transport(handler_log, mode="ok"):
     def h(req: httpx.Request):
         assert req.url.host == "generativelanguage.googleapis.com" and req.headers["x-goog-api-key"] == "GKEY"
         assert "GKEY" not in str(req.url)                                    # a chave vai em cabeçalho, nunca no URL
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"models": [{"name": f"models/{n}", "supportedGenerationMethods": ["generateContent"]} for n in
+                                                       ("gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.8-flash-preview", "embedding-001")]
+                                             + [{"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]}]})
+        if "gemini-2.5-flash" in req.url.path:
+            return httpx.Response(404, json={"error": {"message": "not found"}})        # o modelo antigo já não existe para esta chave
+        seen_models.append(req.url.path)
         body = json.loads(req.content)
         items = json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]
         handler_log.append(items)
@@ -183,7 +193,7 @@ def gem_transport(handler_log, mode="ok"):
 
 def test_gemini_translates_validates_count_and_subdivides():
     log = []
-    g = Gemini("GKEY", "gemini-2.5-flash", gem_transport(log, "wrong_count"))
+    g = Gemini("GKEY", "gemini-test", gem_transport(log, "wrong_count"))
     texts = [f"line {i}" for i in range(100)]
     out = g.translate(texts, "pt-PT", "en")
     assert out == [f"PT:{t}" for t in texts] and g.untranslated == 0           # contagem errada → subdivide até acertar
@@ -224,7 +234,7 @@ def test_gemini_full_flow_via_api(cfg, fake_probe, media_root):
     with TestClient(app) as c:
         c.post("/api/libraries", json={"name": "Séries", "type": "series", "path": str(media_root / "Séries"), "writable": True})
         c.put("/api/secrets", json={"values": {"opensubtitles_api_key": "K", "opensubtitles_username": "u", "opensubtitles_password": "p", "gemini_api_key": "GKEY"}})
-        c.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}], "translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"], "engine": "gemini", "gemini_model": "gemini-2.5-flash"}})
+        c.put("/api/settings", json={"languages": [{"code": "pt-PT", "priority": "primary"}], "translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"], "engine": "gemini", "gemini_model": ""}})
         j = c.post("/api/scan", json={}).json()["job_id"]
         for _ in range(200):
             if c.get(f"/api/jobs/{j}").json()["status"] in ("done", "failed"):
@@ -243,3 +253,18 @@ def test_gemini_full_flow_via_api(cfg, fake_probe, media_root):
         assert len(cues) == 120 and cues[0].text.startswith("PT:") and cues[0].start_ms == 10_000
         bad = c.put("/api/settings", json={"translation": {"enabled": True, "source_languages": ["en"], "engine": "outro"}})
         assert bad.status_code == 400
+
+
+def test_gemini_auto_model_picks_latest_flash_and_404_suggests_models():
+    seen_models.clear()
+    Gemini._AUTO.clear()
+    g = Gemini("GKEY", transport=gem_transport([]))
+    assert g.translate(["hello"], "pt-PT", "en") == ["PT:hello"]
+    assert g.model == "gemini-3.8-flash" and seen_models[-1].endswith("/models/gemini-3.8-flash:generateContent")      # ignora lite/preview/modelos antigos
+    assert Gemini.pick_flash(["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash-preview"]) == "gemini-2.5-flash"
+    assert Gemini.pick_flash(["embedding-001"]) is None
+    old = Gemini("GKEY", "gemini-2.5-flash", gem_transport([]))                            # modelo fixo e já inexistente
+    with pytest.raises(DeepLError) as e:
+        old.translate(["x"], "pt-PT", "en")
+    assert "não encontrado" in str(e.value) and "gemini-3.8-flash" in str(e.value) and "automático" in str(e.value)
+    Gemini._AUTO.clear()

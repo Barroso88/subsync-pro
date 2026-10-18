@@ -127,9 +127,11 @@ class Gemini:
     SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in
               ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
 
-    def __init__(self, key: str, model: str = "gemini-2.5-flash", transport: httpx.BaseTransport | None = None):
+    _AUTO: dict[str, tuple[float, str]] = {}     # chave -> (quando, modelo escolhido automaticamente)
+
+    def __init__(self, key: str, model: str = "", transport: httpx.BaseTransport | None = None):
         self.key, self.transport = key, transport
-        self.model = re.sub(r"[^A-Za-z0-9._-]", "", model or "gemini-2.5-flash") or "gemini-2.5-flash"
+        self.model = re.sub(r"[^A-Za-z0-9._-]", "", model or "")      # vazio = automático (o Flash mais recente que a chave pode usar)
         self.base = "https://generativelanguage.googleapis.com/v1beta"
         self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
         self._sleep = time.sleep
@@ -140,6 +142,49 @@ class Gemini:
 
     def usage(self) -> Usage:            # o Google não expõe consumo: a quota vê-se no AI Studio
         return Usage(0, 0)
+
+    def list_models(self, c: httpx.Client | None = None) -> list[str]:
+        """Modelos que esta chave pode usar para gerar texto (nomes sem o prefixo «models/»)."""
+        own = c is None
+        c = c or self._client()
+        try:
+            r = c.get(f"{self.base}/models", params={"pageSize": 200})
+        except httpx.HTTPError as e:
+            raise DeepLError(f"Sem ligação ao Gemini: {type(e).__name__}") from e
+        finally:
+            if own:
+                c.close()
+        if r.status_code in (401, 403):
+            raise DeepLError("O Gemini recusou a chave.", auth=True)
+        if r.status_code >= 400:
+            raise DeepLError(f"Gemini respondeu HTTP {r.status_code} ao listar modelos.")
+        names = [m["name"].split("/", 1)[-1] for m in r.json().get("models", []) if "generateContent" in (m.get("supportedGenerationMethods") or [])]
+        return sorted(names)
+
+    @staticmethod
+    def pick_flash(names: list[str]) -> str | None:
+        """O «gemini-X[.Y]-flash» estável mais recente (sem lite/preview/imagem/áudio)."""
+        best, best_v = None, (-1.0,)
+        for n in names:
+            m = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", n)
+            if m and (float(m.group(1)),) > best_v:
+                best, best_v = n, (float(m.group(1)),)
+        return best
+
+    def _ensure_model(self, c: httpx.Client) -> None:
+        if self.model:
+            return
+        hit = Gemini._AUTO.get(self.key)
+        if hit and time.time() - hit[0] < 3600:
+            self.model = hit[1]
+            return
+        try:
+            self.model = self.pick_flash(self.list_models(c)) or "gemini-flash-latest"
+        except DeepLError as e:
+            if e.auth:
+                raise
+            self.model = "gemini-flash-latest"       # alias oficial do Flash mais recente
+        Gemini._AUTO[self.key] = (time.time(), self.model)
 
     def _call(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str]) -> list[str] | None:
         """Um pedido. Devolve a lista traduzida, ou None se recusada/inválida (o chamador subdivide)."""
@@ -172,7 +217,14 @@ class Gemini:
                 pass
             raise DeepLError(f"O Gemini recusou o pedido ({r.status_code}): {msg or 'verifique a chave e o modelo'}", auth=r.status_code in (401, 403))
         if r.status_code == 404:
-            raise DeepLError(f"Modelo «{self.model}» não encontrado (Definições → Idiomas → modelo Gemini).")
+            Gemini._AUTO.pop(self.key, None)
+            hint = ""
+            try:
+                av = [n for n in self.list_models(c) if "flash" in n][:6]
+                hint = f" Modelos disponíveis para a sua chave: {', '.join(av)}." if av else ""
+            except DeepLError:
+                pass
+            raise DeepLError(f"Modelo «{self.model}» não encontrado.{hint} Deixe o campo do modelo vazio (automático) ou escreva um dos nomes acima.")
         if r.status_code == 429:
             raise DeepLError("Quota/limite de pedidos do Gemini atingido. Tente mais tarde.", quota=True)
         if r.status_code >= 400:
@@ -207,6 +259,7 @@ class Gemini:
         out: list[str] = []
         chunks = [texts[i:i + GEMINI_CHUNK] for i in range(0, len(texts), GEMINI_CHUNK)]
         with self._client() as c:
+            self._ensure_model(c)
             for n, ch in enumerate(chunks):
                 out += self._chunk(c, ch, target, source, texts[max(0, len(out) - 3):len(out)])
                 if progress:

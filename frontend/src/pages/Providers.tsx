@@ -97,6 +97,7 @@ function TranslationCard() {
   const settings = useSettings();
   const [key, setKey] = useState("");
   const [model, setModel] = useState<string | null>(null);
+  const [modelList, setModelList] = useState<string[] | null>(null);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const q = useQuery({ queryKey: ["translation"], queryFn: () => api.get<Tr>("/translation") });
   const t = q.data;
@@ -113,9 +114,13 @@ function TranslationCard() {
     onError: (e: Error) => toast("bad", e.message),
   });
   const test = useMutation({
-    mutationFn: () => api.post<{ sample: string }>("/translation/test"),
-    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona. «Good morning, how are you?» → «${r.sample}»` }),
+    mutationFn: () => api.post<{ sample: string; model?: string }>("/translation/test"),
+    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona${r.model ? ` (modelo ${r.model})` : ""}. «Good morning, how are you?» → «${r.sample}»` }),
     onError: (e: Error) => setTestMsg({ ok: false, text: e.message }),
+  });
+  const models = useMutation({
+    mutationFn: () => api.get<{ models: string[]; suggested: string | null }>("/translation/models"),
+    onSuccess: (r) => setModelList(r.models), onError: (e: Error) => toast("bad", e.message),
   });
   const pct = t?.usage && t.usage.limit ? Math.min(100, (t.usage.used / t.usage.limit) * 100) : 0;
   const gem = engine === "gemini";
@@ -134,9 +139,12 @@ function TranslationCard() {
             <option value="deepl">DeepL</option><option value="gemini">Gemini (Google AI Studio)</option></select>
         </Field>
         {gem && (
-          <Field label="Modelo Gemini" hint="Por omissão gemini-2.5-flash. Se o Google o substituir, escreva aqui o nome do modelo atual (aistudio.google.com).">
-            <div className="flex gap-2"><input className="input" value={model ?? cfg.gemini_model ?? "gemini-2.5-flash"} onChange={(e) => setModel(e.target.value)} />
-              <button className="btn-ghost" disabled={model === null || saveCfg.isPending} onClick={() => saveCfg.mutate({ gemini_model: (model ?? "").trim() || "gemini-2.5-flash" }, { onSuccess: () => setModel(null) })}>Guardar</button></div>
+          <Field label="Modelo Gemini" hint="Vazio = automático (recomendado): a app escolhe o Flash mais recente que a sua chave pode usar. Use «Listar modelos» para ver o que está disponível.">
+            <div className="flex gap-2"><input className="input" placeholder="automático" value={model ?? cfg.gemini_model ?? ""} onChange={(e) => setModel(e.target.value)} />
+              <button className="btn-ghost" disabled={model === null || saveCfg.isPending} onClick={() => saveCfg.mutate({ gemini_model: (model ?? "").trim() }, { onSuccess: () => setModel(null) })}>Guardar</button>
+              <button className="btn-ghost" disabled={!t?.configured || models.isPending} onClick={() => models.mutate()}>{models.isPending && <Loader2 size={14} className="animate-spin" />}Listar modelos</button></div>
+            {modelList && <div className="flex gap-1.5 flex-wrap mt-2">{modelList.filter((m) => m.includes("flash")).map((m) => <button key={m} className="h-6 px-2 rounded-md text-xs border border-line text-mute hover:text-fg" onClick={() => setModel(m)}>{m}</button>)}
+              {modelList.length === 0 && <span className="text-xs text-dim">Nenhum modelo devolvido.</span>}</div>}
           </Field>
         )}
         <Field label={gem ? "API key do Gemini" : "API key do DeepL"} hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}).${gem ? "" : " Chaves gratuitas terminam em :fx."}` : gem ? "Crie uma chave em aistudio.google.com/apikey." : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>

@@ -439,6 +439,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def translation_status():
         return core.translation_status()
 
+    @api.get("/translation/models")
+    def translation_models():
+        return core.gemini_models()
+
     @api.post("/translation/test")
     def translation_test():
         return core.translation_test()

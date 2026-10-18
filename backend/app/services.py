@@ -583,7 +583,7 @@ class App:
         if not key:
             raise ServiceError(f"API key do {'Gemini' if name == 'gemini' else 'DeepL'} não configurada (Fornecedores → Tradução).", 400)
         if name == "gemini":
-            return Gemini(key, self.settings.get("translation").get("gemini_model") or "gemini-2.5-flash", self.transport)
+            return Gemini(key, self.settings.get("translation").get("gemini_model") or "", self.transport)
         return DeepL(key, self.transport)
 
     def _targets(self) -> list[str]:
@@ -596,14 +596,24 @@ class App:
             out = eng.translate(["Good morning, how are you?"], "pt-PT", "en")
         except DeepLError as e:
             raise ServiceError(str(e), 502)
-        return {"ok": True, "engine": self._engine_name(), "sample": out[0] if out else ""}
+        return {"ok": True, "engine": self._engine_name(), "model": getattr(eng, "model", None), "sample": out[0] if out else ""}
+
+    def gemini_models(self) -> dict:
+        key = self.secrets.get("gemini_api_key")
+        if not key:
+            raise ServiceError("API key do Gemini não configurada.", 400)
+        try:
+            names = Gemini(key, "", self.transport).list_models()
+        except DeepLError as e:
+            raise ServiceError(str(e), 502)
+        return {"models": names, "suggested": Gemini.pick_flash(names)}
 
     def translation_status(self) -> dict:
         cfg = self.settings.get("translation")
         eng = self._engine_name()
         kname = "gemini_api_key" if eng == "gemini" else "deepl_api_key"
         st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self.secrets.get(kname)), "engine": eng,
-              "model": cfg.get("gemini_model") if eng == "gemini" else None, "deepl_configured": bool(self.secrets.get("deepl_api_key")),
+              "model": (cfg.get("gemini_model") or "automático") if eng == "gemini" else None, "deepl_configured": bool(self.secrets.get("deepl_api_key")),
               "gemini_configured": bool(self.secrets.get("gemini_api_key")),
               "source": self.secrets.source(kname), "targets": self._targets(), "usage": None, "error": None, "plan": None}
         if st["configured"] and eng == "deepl":

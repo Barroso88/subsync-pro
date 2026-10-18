@@ -40,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
         "auto_fallback": False,            # em lote: se não houver pt, traduzir a partir de inglês (fica «por confirmar»)
         "source_languages": ["en"],        # idiomas de origem aceites
         "engine": "deepl",                 # deepl | gemini
-        "gemini_model": "gemini-2.5-flash",
+        "gemini_model": "",                # vazio = automático (Flash mais recente disponível para a chave)
     },
     "audio_sync": {"enabled": False},
 }
