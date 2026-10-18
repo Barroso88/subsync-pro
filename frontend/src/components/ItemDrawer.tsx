@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench, Upload } from "lucide-react";
 import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
-import { useMeta } from "../hooks";
+import { useLangFilter, useMeta } from "../hooks";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
 import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "./subs";
 import { EditHistory, SubToolsModal } from "./SubTools";
@@ -181,11 +181,18 @@ const ISSUE_TONE: Record<string, "bad" | "warn" | "neutral"> = { error: "bad", w
 function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   const meta = useMeta();
   const [tools, setTools] = useState<Sub | null>(null);
+  const lf = useLangFilter();
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? d.subtitles : d.subtitles.filter((s) => lf.visible(s.lang));
+  const hiddenN = d.subtitles.length - d.subtitles.filter((s) => lf.visible(s.lang)).length;
   if (!d.subtitles.length) return <Empty icon={<FileText size={20} />} title="Sem legendas" hint="Não foram encontradas legendas externas nem embutidas para este vídeo." action={<div className="flex gap-2 flex-wrap justify-center"><button className="btn-primary" onClick={onSearch}><Search size={14} />Procurar online</button><UploadSubtitle d={d} /></div>} />;
   return (
     <div className="space-y-2.5">
-      <div className="flex justify-end"><UploadSubtitle d={d} /></div>
-      {d.subtitles.map((s) => (
+      <div className="flex justify-end items-center gap-3 flex-wrap">
+        {hiddenN > 0 && <button className="text-xs text-mute hover:text-fg underline" onClick={() => setShowAll(!showAll)}>{showAll ? "Esconder as de outros idiomas" : `Mostrar ${hiddenN} legendas noutros idiomas (escondidas)`}</button>}
+        <UploadSubtitle d={d} /></div>
+      {shown.length === 0 && <div className="text-sm text-mute card p-3.5">Todas as legendas deste filme estão noutros idiomas (escondidas). Use «Mostrar» acima ou ajuste em Definições → Idiomas.</div>}
+      {shown.map((s) => (
         <div key={s.id} className="card p-3.5 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
             {s.kind === "embedded" ? <Layers size={15} className="text-mute" /> : <FileText size={15} className="text-mute" />}

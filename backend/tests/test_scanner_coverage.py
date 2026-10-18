@@ -278,3 +278,15 @@ def test_auto_download_after_scan_only_searches_new_items(core, media_root):
     wait_job(core, core.start_scan(None))
     new = core.db.one("SELECT id FROM media_items WHERE title LIKE 'Novo Filme%'")["id"]
     assert calls[-1] == [new] and len(calls) == 2                          # entrou um filme: só se procura esse
+
+
+def test_display_languages_setting_default_and_validation(cfg, fake_probe, media_root):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    with TestClient(create_app(cfg)) as c:
+        d = c.get("/api/settings").json()["display_languages"]
+        assert d == {"hide_others": True, "keep": ["pt-PT", "pt-BR", "pt"]}                       # por omissão: só português
+        assert c.put("/api/settings", json={"display_languages": {"hide_others": False, "keep": ["pt", "en"]}}).status_code == 200
+        assert c.get("/api/settings").json()["display_languages"]["keep"] == ["pt", "en"]
+        assert c.put("/api/settings", json={"display_languages": {"hide_others": "sim", "keep": []}}).status_code == 400
+        assert c.put("/api/settings", json={"display_languages": {"keep": [1, 2]}}).status_code == 400

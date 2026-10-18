@@ -69,6 +69,17 @@ export default function SettingsPage() {
             <Toggle checked={!!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, enabled: v })} label="Permitir tradução automática (DeepL ou Gemini)" hint="Mostra «Traduzir» nos resultados noutros idiomas. Escolha o motor e coloque a chave em Fornecedores. O texto é enviado ao serviço escolhido." />
             <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de inglês se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome a quota do motor de tradução." />
             <Toggle checked={d.prefer_forced} onChange={(v) => set("prefer_forced", v)} label="Incluir legendas forçadas nas pesquisas" />
+            <Field label="Idiomas a mostrar nas legendas" hint="Só aparência: esconde os chips e as listas de legendas noutros idiomas (não apaga nada nem muda a cobertura). Legendas sem idioma ficam sempre visíveis.">
+              <div className="space-y-2">
+                <Toggle checked={d.display_languages?.hide_others !== false} onChange={(v) => set("display_languages", { ...d.display_languages, hide_others: v })} label="Esconder legendas noutros idiomas" />
+                <div className="flex flex-wrap gap-1.5">{(meta.data?.languages ?? []).map((l) => {
+                  const keep: string[] = d.display_languages?.keep ?? [];
+                  const on = keep.includes(l.code);
+                  return <button key={l.code} type="button" disabled={d.display_languages?.hide_others === false}
+                    onClick={() => set("display_languages", { ...d.display_languages, keep: on ? keep.filter((c) => c !== l.code) : [...keep, l.code] })}
+                    className={`h-6 px-2 rounded-md text-xs border ${on ? "bg-accent/15 border-accent/40 text-accent" : "border-line text-dim"} disabled:opacity-40`} title={l.name}>{l.code}</button>;
+                })}</div>
+              </div></Field>
             <Field label="Legendas SDH/HI"><select className="input" value={d.hi_policy} onChange={(e) => set("hi_policy", e.target.value)}><option value="exclude">Excluir</option><option value="include">Incluir</option><option value="only">Apenas SDH/HI</option></select></Field>
           </div>
         </Section>

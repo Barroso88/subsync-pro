@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "generic_pt_variant": "",          # "" = «pt» sem variante não conta | "pt-PT" | "pt-BR": variante assumida para «pt» genérico (assinalada ≈pt)
     "embedded_variant_scan": False,    # LENTO: abre os vídeos (ffmpeg) para estimar pt-PT/pt-BR de faixas embutidas «pt». Só se ativado.
+    "display_languages": {"hide_others": True, "keep": ["pt-PT", "pt-BR", "pt"]},   # só aparência: esconde chips/listas de legendas noutros idiomas (não apaga nada)
     "embedded_reference": True,        # ao descarregar, se não houver legenda externa de referência, extrair UMA faixa embutida (ffmpeg) para validar a sincronização
     "accept_pt_br_fallback": False,   # se faltar pt-PT, aceitar pt-BR (instalada como pt-BR, nunca renomeada)
     "translation": {

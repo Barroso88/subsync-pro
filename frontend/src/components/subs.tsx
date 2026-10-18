@@ -1,9 +1,13 @@
 import { Badge } from "./ui";
+import { useLangFilter } from "../hooks";
 import { Evaluation, Item, Meta } from "../api";
 import { Check, FileText, Layers, ShieldCheck, TriangleAlert, HelpCircle, Ban, Hash } from "lucide-react";
 
 export function LangChips({ item, wanted }: { item: Pick<Item, "covered" | "missing"> & { fallback?: Record<string, string> }; wanted?: string[] }) {
-  const have = Object.entries(item.covered);
+  const lf = useLangFilter();
+  const all = Object.entries(item.covered);
+  const have = all.filter(([l]) => lf.visible(l) || !!item.fallback?.[l]);
+  const hidden = all.filter(([l]) => !have.some(([h]) => h === l)).map(([l]) => l);
   return (
     <div className="flex flex-wrap gap-1">
       {have.map(([l, src]) => (
@@ -12,7 +16,8 @@ export function LangChips({ item, wanted }: { item: Pick<Item, "covered" | "miss
         </Badge>
       ))}
       {item.missing.map((l) => <Badge key={l} tone="bad" title="Em falta"><span className="opacity-70">−</span>{l}</Badge>)}
-      {!have.length && !item.missing.length && <span className="text-dim text-xs">—</span>}
+      {hidden.length > 0 && <Badge tone="neutral" title={`Escondidas (outros idiomas): ${hidden.join(", ")}`}>+{hidden.length}</Badge>}
+      {!all.length && !item.missing.length && <span className="text-dim text-xs">—</span>}
     </div>
   );
 }

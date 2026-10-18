@@ -635,6 +635,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                 raise HTTPException(400, "Definições de tradução inválidas")
             if v.get("engine", "deepl") not in ("deepl", "gemini") or not isinstance(v.get("gemini_model", ""), str) or len(v.get("gemini_model", "")) > 80:
                 raise HTTPException(400, "Motor ou modelo de tradução inválido")
+        elif k == "display_languages":
+            if (not isinstance(v, dict) or not isinstance(v.get("hide_others", True), bool) or not isinstance(v.get("keep", []), list)
+                    or len(v.get("keep", [])) > 60 or any(not isinstance(c, str) or len(c) > 16 for c in v.get("keep", []))):
+                raise HTTPException(400, "Definição de idiomas visíveis inválida")
         elif k == "generic_pt_variant" and v not in ("", "pt-PT", "pt-BR"):
             raise HTTPException(400, "generic_pt_variant inválido")
         elif k == "hi_policy" and v not in ("include", "exclude", "only"):
