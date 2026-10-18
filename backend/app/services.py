@@ -23,7 +23,7 @@ from .integrations.arr import Arr
 from .integrations.bazarr import Bazarr
 from .integrations.common import IntegrationError, map_remote_to_local
 from .integrations.plex import Plex
-from .jobs import JobCancelled, JobContext, JobManager
+from .jobs import JobCancelled, JobContext, JobManager, JobError
 from .languages import normalize_lang
 from .moviehash import moviehash
 from .providers.base import ProviderContext, ProviderError, RateLimiter, SearchQuery, SubtitleResult
@@ -71,6 +71,7 @@ class App:
         self.jobs.register("webhook_import", self._job_webhook_import)
         self.jobs.register("bazarr_batch", self._job_bazarr_batch)
         self.jobs.register("convert_scan", self._job_convert_scan)
+        self.jobs.register("translate", self._job_translate)
         self.jobs.register("convert_batch", self._job_convert_batch)
 
     # ---- ciclo de vida -----------------------------------------------------
@@ -625,7 +626,25 @@ class App:
                 st["error"] = str(e)
         return st
 
-    def translate_prepare(self, media_id: int, result: dict, target: str) -> dict:
+    def start_translate(self, media_id: int, result: dict, target: str) -> int:
+        """Traduz em segundo plano (com progresso e cancelamento). Falhas óbvias (desativado, sem chave, idioma) recusam-se logo."""
+        if not self.settings.get("translation")["enabled"]:
+            raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
+        if target not in self._targets():
+            raise ServiceError("Idioma de destino não suportado para tradução.")
+        self._deepl()
+        m = self.db.one("SELECT title FROM media_items WHERE id=?", (media_id,))
+        if not m:
+            raise ServiceError("Item não encontrado.", 404)
+        return self.jobs.submit("translate", f"Traduzir legenda para {target}: {m['title']}", {"media_id": media_id, "result": result, "target": target}, dedupe=True)
+
+    def _job_translate(self, ctx: JobContext, p: dict) -> dict:
+        try:
+            return self.translate_prepare(p["media_id"], p["result"], p["target"], ctx)
+        except ServiceError as e:
+            raise JobError(str(e)) from e      # a mensagem chega à tarefa (e ao utilizador) tal como está
+
+    def translate_prepare(self, media_id: int, result: dict, target: str, ctx: "JobContext | None" = None) -> dict:
         """Descarrega a legenda de origem, traduz o texto (tempos intactos) e deixa-a «por confirmar»."""
         if not self.settings.get("translation")["enabled"]:
             raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
@@ -647,17 +666,25 @@ class App:
             "INSERT INTO downloads(media_id,provider,provider_file_id,lang,release,file_name,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
             (media_id, r.provider, str(r.file_id), target, r.release[:200], r.file_name[:200], "preparing", now())).lastrowid
         try:
+            if ctx:
+                ctx.step("A descarregar a legenda original…", inc=0, message="A descarregar a legenda original", force=True)
             df = self.provider(r.provider).download(r)
             self._count_download(r.provider)
             v = validate_download(df.name, df.data, media)
             from .subtitles.parser import analyze
             from .evaluator import Factor
+
+            def prog(done: int, total: int) -> None:
+                if ctx:
+                    if ctx.total == 0:
+                        ctx.set_total(total)
+                    ctx.step("A traduzir…", inc=1, message=f"Bloco {done} de {total}", force=True)
             n_chars = count_chars(v.parsed.cues)
             eng_label = "Gemini" if self._engine_name() == "gemini" else "DeepL"
             usage = deepl.usage()
             if usage.limit and n_chars > usage.remaining:
                 raise ServiceError(f"Quota {eng_label} insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
-            cues, sent = translate_cues(v.parsed.cues, target, src, deepl)
+            cues, sent = translate_cues(v.parsed.cues, target, src, deepl, prog)
             text = to_srt(cues)
             tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
             s = self.settings.all()

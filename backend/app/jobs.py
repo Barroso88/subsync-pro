@@ -20,6 +20,10 @@ class JobCancelled(Exception):
     pass
 
 
+class JobError(Exception):
+    """Falha esperada de uma tarefa: a mensagem é mostrada tal como está (sem o nome da exceção)."""
+
+
 class JobContext:
     def __init__(self, mgr: "JobManager", job_id: int):
         self.mgr, self.id = mgr, job_id
@@ -95,6 +99,9 @@ class JobManager:
                 (now(), json.dumps(result, default=str) if result is not None else None, jid))
         except JobCancelled:
             self.db.execute("UPDATE jobs SET status='cancelled', finished_at=?, current=NULL WHERE id=?", (now(), jid))
+        except JobError as e:
+            self.db.execute("UPDATE jobs SET status='failed', finished_at=?, error=?, current=NULL WHERE id=?", (now(), scrub(str(e))[:500], jid))
+            add_event(self.db, "job", f"Tarefa #{jid} ({jtype}) falhou: {e}", "error")
         except Exception as e:  # noqa: BLE001 - registamos tudo
             log.error("job %s (%s) falhou: %s", jid, jtype, scrub(traceback.format_exc()))
             self.db.execute("UPDATE jobs SET status='failed', finished_at=?, error=?, current=NULL WHERE id=?",

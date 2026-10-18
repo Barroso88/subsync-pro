@@ -138,11 +138,24 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       qc.invalidateQueries();
     } catch (e) { toast("bad", (e as Error).message); } finally { setBzBusy(null); }
   };
+  // tradução em segundo plano: arranca uma tarefa e mostra o progresso (continua mesmo que o modal seja fechado)
+  const [trJob, setTrJob] = useState<number | null>(null);
   const trans = useMutation({
-    mutationFn: (c: Candidate) => api.post<Download>(`/media/${d.id}/translate`, { result: c.result, target }),
-    onSuccess: (r) => { setPrepared(r); setAskTr(null); qc.invalidateQueries({ queryKey: ["downloads"] }); qc.invalidateQueries({ queryKey: ["translation"] }); },
+    mutationFn: (c: Candidate) => api.post<{ job_id: number }>(`/media/${d.id}/translate/start`, { result: c.result, target }),
+    onSuccess: (r) => setTrJob(r.job_id),
     onError: (e: Error) => { toast("bad", e.message); setAskTr(null); },
   });
+  const trJobQ = useQuery({ queryKey: ["translate-job", trJob], enabled: trJob != null,
+    queryFn: () => api.get<{ id: number; status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${trJob}`),
+    refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
+  const trRunning = trJob != null && (!trJobQ.data || ["queued", "running"].includes(trJobQ.data.status));
+  useEffect(() => {
+    const j = trJobQ.data;
+    if (!j || trJob == null) return;
+    if (j.status === "done" && j.result) { setPrepared(j.result); setAskTr(null); setTrJob(null); qc.invalidateQueries({ queryKey: ["downloads"] }); qc.invalidateQueries({ queryKey: ["translation"] }); }
+    else if (["failed", "cancelled", "interrupted"].includes(j.status)) { if (j.status === "failed") toast("bad", j.error || "A tradução falhou."); else toast("warn", "Tradução cancelada."); setAskTr(null); setTrJob(null); }
+  }, [trJobQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const cancelTr = useMutation({ mutationFn: () => api.post(`/jobs/${trJob}/cancel`), onError: (e: Error) => toast("bad", e.message) });
   const search = useMutation({
     mutationFn: () => api.post<SearchRes>(`/media/${d.id}/search`, { languages: langs }),
     onSuccess: setRes, onError: (e: Error) => toast("bad", e.message),
@@ -205,9 +218,18 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => prep.mutate(c)} busy={prep.isPending}
         onTranslate={canTranslate && c.result.language !== target ? () => setAskTr(c) : undefined} />)}
       <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (${tr.data?.engine === "gemini" ? "Gemini" : "DeepL"})`}
-        footer={<><button className="btn-ghost" onClick={() => setAskTr(null)}>Cancelar</button>
-          <button className="btn-primary" disabled={trans.isPending} onClick={() => askTr && trans.mutate(askTr)}>{trans.isPending && <Loader2 size={14} className="animate-spin" />}Descarregar e traduzir</button></>}>
+        footer={trRunning ? (<><button className="btn-ghost" onClick={() => setAskTr(null)}>Fechar (continua em segundo plano)</button>
+          <button className="btn-danger" disabled={cancelTr.isPending} onClick={() => cancelTr.mutate()}>Cancelar tradução</button></>) : (<><button className="btn-ghost" onClick={() => setAskTr(null)}>Cancelar</button>
+          <button className="btn-primary" disabled={trans.isPending} onClick={() => askTr && trans.mutate(askTr)}>{trans.isPending && <Loader2 size={14} className="animate-spin" />}Descarregar e traduzir</button></>)}>
         <div className="space-y-3 text-sm">
+          {trRunning && (
+            <div className="card bg-s2 p-3.5 space-y-2">
+              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{trJobQ.data?.current || "A iniciar…"}</div>
+              <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${trJobQ.data?.total ? Math.min(100, (100 * trJobQ.data.progress) / trJobQ.data.total) : 4}%` }} /></div>
+              <div className="flex justify-between text-xs text-mute"><span>{trJobQ.data?.message || "A preparar…"}</span><span className="tabular-nums">{trJobQ.data?.total ? `${Math.round((100 * trJobQ.data.progress) / trJobQ.data.total)} %` : ""}</span></div>
+              <div className="text-xs text-dim">Pode fechar esta janela: a tradução continua em segundo plano (Tarefas e atividade) e, quando acabar, a legenda fica em «Histórico de downloads» por confirmar.</div>
+            </div>
+          )}
           <div>Vai descarregar <b className="break-all">{askTr?.result.release || askTr?.result.file_name}</b> ({askTr?.result.language}) e traduzir o texto para <b>{target}</b>, mantendo os tempos.</div>
           <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
             <div>• O texto da legenda é enviado ao {tr.data?.engine === "gemini" ? "Gemini (Google)" : "DeepL"}.</div>

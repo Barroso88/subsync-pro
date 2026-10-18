@@ -268,3 +268,54 @@ def test_gemini_auto_model_picks_latest_flash_and_404_suggests_models():
         old.translate(["x"], "pt-PT", "en")
     assert "não encontrado" in str(e.value) and "gemini-3.8-flash" in str(e.value) and "automático" in str(e.value)
     Gemini._AUTO.clear()
+
+
+def wait_job(c, jid):
+    for _ in range(300):
+        j = c.get(f"/api/jobs/{jid}").json()
+        if j["status"] not in ("queued", "running"):
+            return j
+        time.sleep(0.05)
+    raise AssertionError("tarefa não terminou")
+
+
+def test_translate_runs_as_background_job_with_progress(client):
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"]}})
+    item = e2(client)
+    res = client.post(f"/api/media/{item['id']}/search", json={"languages": ["en"]}).json()["results"][0]["result"]
+    r = client.post(f"/api/media/{item['id']}/translate/start", json={"result": res, "target": "pt-PT"})
+    assert r.status_code == 202
+    j = wait_job(client, r.json()["job_id"])
+    assert j["status"] == "done" and j["total"] == 3 and j["progress"] == 3                  # 120 falas = 3 lotes de 50 (DeepL)
+    dl = j["result"]
+    assert dl["status"] == "prepared" and dl["lang"] == "pt-PT" and dl["evaluation"]["translation"]["engine"] == "deepl"
+    assert client.get("/api/downloads", params={"status": "prepared"}).json()["total"] == 1   # fica por confirmar, não instalada
+    # recusas óbvias são imediatas (sem criar tarefa)
+    assert client.post(f"/api/media/{item['id']}/translate/start", json={"result": res, "target": "ja"}).status_code == 400
+    client.put("/api/settings", json={"translation": {"enabled": False, "source_languages": ["en"]}})
+    assert client.post(f"/api/media/{item['id']}/translate/start", json={"result": res, "target": "pt-PT"}).status_code == 403
+
+
+def test_translate_job_failure_message_is_clean(client):
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"]}})
+    client.state["used"] = 499_990
+    item = e2(client)
+    res = client.post(f"/api/media/{item['id']}/search", json={"languages": ["en"]}).json()["results"][0]["result"]
+    j = wait_job(client, client.post(f"/api/media/{item['id']}/translate/start", json={"result": res, "target": "pt-PT"}).json()["job_id"])
+    assert j["status"] == "failed" and j["error"].startswith("Quota DeepL insuficiente") and "Error" not in j["error"][:20]
+
+
+def test_gemini_thinking_off_falls_back_when_model_rejects_it():
+    seen = []
+
+    def h(req: httpx.Request):
+        body = json.loads(req.content)
+        seen.append("thinkingConfig" in body["generationConfig"])
+        if "thinkingConfig" in body["generationConfig"]:
+            return httpx.Response(400, json={"error": {"message": "Budget 0 is invalid. This model only works in thinking mode."}})
+        items = json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]
+        return gem_resp([f"PT:{t}" for t in items])
+    g = Gemini("GKEY", "gemini-test", httpx.MockTransport(h))
+    assert g.translate(["a", "b"], "pt-PT", "en") == ["PT:a", "PT:b"] and seen == [True, False]
+    g.translate(["c"], "pt-PT", "en")
+    assert seen[-1] is False                                                                 # lembra-se: não volta a tentar

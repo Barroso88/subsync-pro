@@ -135,6 +135,7 @@ class Gemini:
         self.base = "https://generativelanguage.googleapis.com/v1beta"
         self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
         self._sleep = time.sleep
+        self._thinking = True           # tenta desligar o «pensar» do modelo (mais rápido); recua se o modelo o rejeitar
 
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=120, follow_redirects=False, transport=self.transport,
@@ -197,6 +198,8 @@ class Gemini:
                 "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
                                      "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}},
                 "safetySettings": self.SAFETY}
+        if self._thinking:
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         for attempt in range(4):
             try:
                 r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
@@ -209,6 +212,9 @@ class Gemini:
                 self._sleep(4 * (attempt + 1))
                 continue
             break
+        if r.status_code == 400 and self._thinking and "think" in r.text.lower():
+            self._thinking = False       # este modelo não aceita desligar o raciocínio: repete sem isso (e lembra-se)
+            return self._call(c, items, target, source, ctx)
         if r.status_code in (400, 401, 403):
             msg = ""
             try:
