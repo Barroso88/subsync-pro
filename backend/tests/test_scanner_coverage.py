@@ -250,3 +250,31 @@ def test_videos_are_never_opened_by_default(core, media_root, monkeypatch):
     wait_job(core, core.jobs.submit("revalidate", "r", {}))          # «Reclassificar legendas»
     wait_job(core, core.start_scan(None, force_subs=True))
     assert calls == []                                               # por omissão nenhum vídeo é lido pelo ffmpeg
+
+
+def test_auto_download_after_scan_only_searches_new_items(core, media_root):
+    calls = []
+    orig = core.jobs.submit
+
+    def spy(jtype, title, params=None, **kw):
+        if jtype == "batch":
+            calls.append(params["media_ids"])
+            return 0
+        return orig(jtype, title, params, **kw)
+    core.jobs.submit = spy
+    core.settings.set("auto_download", True)
+    prov = core.settings.get("providers")
+    prov["opensubtitles"]["enabled"] = True
+    core.settings.set("providers", prov)
+    core.add_library("Filmes", "movies", str(media_root / "Filmes"), True)
+    wait_job(core, core.start_scan(None))
+    first = core.db.one("SELECT id FROM media_items WHERE kind='movie'")["id"]
+    assert calls == [[first]]                                              # primeira análise: o filme existente é «novo»
+    wait_job(core, core.start_scan(None))
+    assert len(calls) == 1                                                 # sem novidades: NÃO volta a procurar os que já estavam em falta
+    d = media_root / "Filmes" / "Novo Filme (2025)"
+    d.mkdir()
+    (d / "Novo Filme (2025).mkv").write_bytes(b"\3" * 200_000)
+    wait_job(core, core.start_scan(None))
+    new = core.db.one("SELECT id FROM media_items WHERE title LIKE 'Novo Filme%'")["id"]
+    assert calls[-1] == [new] and len(calls) == 2                          # entrou um filme: só se procura esse

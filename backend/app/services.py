@@ -155,6 +155,7 @@ class App:
         libs = [dict(r) for r in self.db.query("SELECT * FROM libraries" + (" WHERE id=?" if p.get("library_id") else ""),
                                                 (p["library_id"],) if p.get("library_id") else ())]
         total: dict[str, int] = {}
+        max_id_before = self.db.scalar("SELECT COALESCE(MAX(id),0) FROM media_items") or 0      # tudo o que tiver id maior foi descoberto NESTA análise
         for lib in libs:
             ctx.check_cancel()
             try:
@@ -171,9 +172,10 @@ class App:
                 add_event(self.db, "integration", f"Sincronização de metadados: {e}", "warning")
         s = self.settings.all()
         if s["auto_download"] and any(p.get("enabled") for p in s["providers"].values()):
-            ids = self.missing_media_ids(limit=int(s["auto_max_per_run"]))
+            # só os itens NOVOS desta análise (um filme que entrou agora), não os que já estavam em falta: esses procuram-se à mão em lote
+            ids = [i for i in self.missing_media_ids(limit=1_000_000) if i > max_id_before][:int(s["auto_max_per_run"])]
             if ids:
-                self.jobs.submit("batch", f"Download automático ({len(ids)} itens)",
+                self.jobs.submit("batch", f"Download automático ({len(ids)} {'item novo' if len(ids) == 1 else 'itens novos'})",
                                  {"media_ids": ids, "install": not s["require_confirmation"], "min_tier": s["auto_min_tier"],
                                   "auto": True})
         return total

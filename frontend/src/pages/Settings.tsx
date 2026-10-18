@@ -75,7 +75,7 @@ export default function SettingsPage() {
 
         <Section title="Downloads automáticos" hint="Por omissão nada é descarregado sem a sua confirmação. Mesmo em modo automático, ficheiros existentes nunca são substituídos.">
           <div className="grid sm:grid-cols-2 gap-4">
-            <Toggle checked={d.auto_download} onChange={(v) => set("auto_download", v)} label="Procurar automaticamente após cada análise" />
+            <Toggle checked={d.auto_download} onChange={(v) => set("auto_download", v)} label="Procurar automaticamente após cada análise" hint="Só procura as legendas dos filmes/episódios NOVOS descobertos nessa análise (e, via Radarr/Sonarr, do ficheiro que acabou de entrar). Os que já estavam em falta não são pesquisados de novo; use a seleção em lote para esses." />
             <Toggle checked={d.require_confirmation} onChange={(v) => set("require_confirmation", v)} label="Exigir confirmação manual antes de instalar" hint="Candidatas ficam «Por confirmar» no histórico." />
             <Field label="Nível mínimo de compatibilidade"><select className="input" value={d.auto_min_tier} onChange={(e) => set("auto_min_tier", e.target.value)}><option value="hash">Apenas confirmada por hash</option><option value="probable">Provável (metadados) ou melhor</option></select></Field>
             <Field label="Máx. itens por execução"><input className="input" type="number" min={1} max={500} value={d.auto_max_per_run} onChange={(e) => set("auto_max_per_run", Number(e.target.value))} /></Field>
