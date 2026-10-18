@@ -451,6 +451,14 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def translate_start(mid: int, b: TranslateIn):
         return {"job_id": core.start_translate(mid, b.result, b.target)}
 
+    class TranslateEmbeddedIn(BaseModel):
+        subtitle_id: int
+        target: str
+
+    @api.post("/media/{mid}/translate-embedded/start", status_code=202)
+    def translate_embedded_start(mid: int, b: TranslateEmbeddedIn):
+        return {"job_id": core.start_translate_embedded(mid, b.subtitle_id, b.target)}
+
     @api.post("/media/{mid}/translate")
     def translate(mid: int, b: TranslateIn):
         return core.translate_prepare(mid, b.result, b.target)

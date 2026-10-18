@@ -63,6 +63,70 @@ export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | 
   );
 }
 
+// Traduzir uma faixa de legenda de TEXTO embutida no vídeo (extração com ffmpeg só quando o utilizador pede; tarefa em segundo plano)
+function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get<Record<string, any>>("/settings") });
+  const tr = useQuery({ queryKey: ["translation"], queryFn: () => api.get<any>("/translation"), enabled: !!settings.data?.translation?.enabled });
+  const baseLangs: string[] = settings.data ? settings.data.languages.map((l: any) => l.code) : [];
+  const targets = baseLangs.filter((c) => ["pt-PT", "pt-BR", "es", "fr", "de", "it", "nl"].includes(c) && c !== sub.lang);
+  const [target, setTarget] = useState("");
+  const [ask, setAsk] = useState(false);
+  const [job, setJob] = useState<number | null>(null);
+  const [prepared, setPrepared] = useState<Download | null>(null);
+  useEffect(() => { if (!target && targets.length) setTarget(targets[0]); }, [targets.join(",")]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const engine = tr.data?.engine === "gemini" ? "Gemini" : "DeepL";
+  const start = useMutation({
+    mutationFn: () => api.post<{ job_id: number }>(`/media/${d.id}/translate-embedded/start`, { subtitle_id: sub.id, target }),
+    onSuccess: (r) => setJob(r.job_id), onError: (e: Error) => { toast("bad", e.message); setAsk(false); },
+  });
+  const jq = useQuery({ queryKey: ["translate-embedded-job", job], enabled: job != null,
+    queryFn: () => api.get<{ status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${job}`),
+    refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
+  const running = job != null && (!jq.data || ["queued", "running"].includes(jq.data.status));
+  useEffect(() => {
+    const j = jq.data;
+    if (!j || job == null) return;
+    if (j.status === "done" && j.result) { setPrepared(j.result); setAsk(false); setJob(null); qc.invalidateQueries({ queryKey: ["downloads"] }); }
+    else if (["failed", "cancelled", "interrupted"].includes(j.status)) { toast(j.status === "failed" ? "bad" : "warn", j.status === "failed" ? (j.error || "A tradução falhou.") : "Tradução cancelada."); setAsk(false); setJob(null); }
+  }, [jq.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const cancel = useMutation({ mutationFn: () => api.post(`/jobs/${job}/cancel`), onError: (e: Error) => toast("bad", e.message) });
+  if (!settings.data?.translation?.enabled || !tr.data?.configured || !targets.length || !sub.text_based || !!sub.forced) return null;
+  const pct = jq.data?.total ? Math.min(100, (100 * jq.data.progress) / jq.data.total) : 0;
+  return (
+    <>
+      <div className="flex items-center gap-2 flex-wrap">
+        <Languages size={14} className="text-mute" /><span className="text-xs text-mute">Traduzir esta faixa para</span>
+        <select className="input !h-8 !w-auto !text-xs" value={target} onChange={(e) => setTarget(e.target.value)}>{targets.map((t) => <option key={t}>{t}</option>)}</select>
+        <button className="btn-ghost !h-8" onClick={() => setAsk(true)}>Traduzir…</button>
+      </div>
+      <Modal open={ask} onClose={() => setAsk(false)} title={`Traduzir faixa embutida para ${target} (${engine})`}
+        footer={running ? (<><button className="btn-ghost" onClick={() => setAsk(false)}>Fechar (continua em segundo plano)</button>
+          <button className="btn-danger" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancelar tradução</button></>) : (<><button className="btn-ghost" onClick={() => setAsk(false)}>Cancelar</button>
+          <button className="btn-primary" disabled={start.isPending} onClick={() => start.mutate()}>{start.isPending && <Loader2 size={14} className="animate-spin" />}Extrair e traduzir</button></>)}>
+        <div className="space-y-3 text-sm">
+          {running && (
+            <div className="card bg-s2 p-3.5 space-y-2">
+              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{jq.data?.current || "A iniciar…"}</div>
+              <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${jq.data?.total ? pct : 4}%` }} /></div>
+              <div className="flex justify-between text-xs text-mute"><span>{jq.data?.message || "A preparar…"}</span><span className="tabular-nums">{jq.data?.total ? `${Math.round(pct)} %` : ""}</span></div>
+              <div className="text-xs text-dim">Pode fechar esta janela: continua em segundo plano (Tarefas e atividade) e a legenda fica em «Histórico de downloads» por confirmar.</div>
+            </div>
+          )}
+          <div>Vai traduzir a faixa embutida <b>#{sub.stream_index}</b> ({sub.lang ?? "idioma desconhecido"}) para <b>{target}</b> e gravar um ficheiro de legenda externo ao lado do vídeo, mantendo os tempos da faixa.</div>
+          <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
+            <div>• O ffmpeg lê o vídeo para extrair <b>só esta faixa</b> (só leitura). Em ficheiros grandes na rede pode demorar de alguns segundos a alguns minutos.</div>
+            <div>• O texto é enviado ao {tr.data?.engine === "gemini" ? "Gemini (Google)" : "DeepL"}.</div>
+            <div>• Fica «por confirmar» e assinalada como <b>tradução automática</b>; reveja a pré-visualização antes de instalar. O vídeo nunca é alterado.</div>
+          </div>
+        </div>
+      </Modal>
+      <PreviewModal dl={prepared} onClose={() => setPrepared(null)} writable={d.library_writable} onDone={() => { qc.invalidateQueries({ queryKey: ["media", d.id] }); qc.invalidateQueries(); }} />
+    </>
+  );
+}
+
 const ISSUE_TONE: Record<string, "bad" | "warn" | "neutral"> = { error: "bad", warning: "warn", info: "neutral" };
 
 function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
@@ -99,6 +163,7 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
             <div key={k} className="flex gap-2 text-xs"><AlertTriangle size={13} className={cx("shrink-0 mt-0.5", i.severity === "error" ? "text-bad" : i.severity === "warning" ? "text-warn" : "text-dim")} /><span className="text-mute">{i.message}</span></div>
           ))}
           {s.kind === "external" && s.status === "ok" && <div><button className="btn-ghost !h-8" onClick={() => setTools(s)}><Wrench size={13} />Ferramentas</button></div>}
+          {s.kind === "embedded" && <EmbeddedTranslate d={d} sub={s} />}
           {s.issues.some((i) => ["duplicate", "language_mismatch", "name_mismatch", "beyond_video", "truncated", "unassociated"].includes(i.code)) && (
             <div className="text-xs text-info bg-info/10 rounded-md px-2.5 py-1.5">Recomendação: reveja manualmente este ficheiro. A aplicação nunca altera nem apaga legendas existentes.</div>
           )}

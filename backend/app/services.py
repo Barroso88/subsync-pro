@@ -646,9 +646,100 @@ class App:
 
     def _job_translate(self, ctx: JobContext, p: dict) -> dict:
         try:
+            if p.get("embedded_sub_id"):
+                return self.translate_embedded(p["media_id"], p["embedded_sub_id"], p["target"], ctx)
             return self.translate_prepare(p["media_id"], p["result"], p["target"], ctx)
         except ServiceError as e:
             raise JobError(str(e)) from e      # a mensagem chega à tarefa (e ao utilizador) tal como está
+
+    def _translate_finish(self, did: int, media: dict, r: SubtitleResult, src: str | None, target: str, v, source_name: str, deepl, ctx: "JobContext | None",
+                          reference: "tuple[str, Any] | None" = None, embedded: bool = False) -> dict:
+        """Traduz as falas já validadas de `v`, revalida, avalia e deixa em «por confirmar». Usado pela legenda descarregada e pela faixa embutida."""
+        from .subtitles.parser import analyze
+        from .evaluator import Factor
+
+        def prog(done: int, total: int) -> None:
+            if ctx:
+                if ctx.total == 0:
+                    ctx.set_total(total)
+                ctx.step("A traduzir…", inc=1, message=f"Bloco {done} de {total}", force=True)
+        n_chars = count_chars(v.parsed.cues)
+        eng_label = "Gemini" if self._engine_name() == "gemini" else "DeepL"
+        usage = deepl.usage()
+        if usage.limit and n_chars > usage.remaining:
+            raise ServiceError(f"Quota {eng_label} insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
+        cues, sent = translate_cues(v.parsed.cues, target, src, deepl, prog)
+        text = to_srt(cues)
+        tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
+        s = self.settings.all()
+        ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
+        an = analyze(tv.parsed, media.get("duration"), size=len(text))
+        ev = evaluate_content(ev, media, tv.parsed, an, reference or self._reference_for(media, target))
+        ev.score = max(0, ev.score - 15)
+        ev.factors.append(Factor(f"Tradução automática ({eng_label}): qualidade inferior a uma legenda humana", -15, "negative"))
+        kept = getattr(deepl, "untranslated", 0)
+        if kept:
+            ev.factors.append(Factor(f"{kept} falas ficaram no idioma original (recusadas pelo modelo)", -5, "negative"))
+            ev.notes.append(f"{kept} falas não foram traduzidas pelo modelo e mantêm o idioma original: reveja.")
+        if embedded:
+            ev.notes.append("Traduzida a partir de uma faixa de legenda embutida no próprio vídeo: os tempos são os dessa faixa (a «referência» é a própria faixa de origem, "
+                            "por isso só prova que a tradução manteve os tempos, não que a faixa esteja sincronizada com o áudio).")
+        ev.notes.append(f"Traduzida de «{src or 'idioma desconhecido'}» para «{target}»; os tempos são os da legenda original. "
+                        "Itálicos e formatação foram removidos. Reveja antes de usar.")
+        extra = {"translation": {"engine": self._engine_name(), "source_lang": src, "target": target, "characters": sent,
+                                  "source_file": source_name, "embedded": embedded}}
+        add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, {eng_label})", "info", media["id"])
+        return self._finish_prepare(did, media, r, target, tv, ev, an, extra)
+
+    def start_translate_embedded(self, media_id: int, sub_id: int, target: str) -> int:
+        """Traduz uma faixa de legenda de TEXTO embutida no vídeo (extração com ffmpeg só quando o utilizador pede)."""
+        if not self.settings.get("translation")["enabled"]:
+            raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
+        if target not in self._targets():
+            raise ServiceError("Idioma de destino não suportado para tradução.")
+        self._deepl()
+        sub = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='embedded' AND present=1", (sub_id, media_id))
+        if not sub:
+            raise ServiceError("Faixa embutida não encontrada.", 404)
+        if not sub["text_based"] or sub["stream_index"] is None:
+            raise ServiceError("Esta faixa é de imagem (PGS/VobSub): não pode ser traduzida como texto.", 422)
+        if normalize_lang(sub["lang"]) == target:
+            raise ServiceError("A faixa já está no idioma de destino.")
+        m = self.db.one("SELECT title FROM media_items WHERE id=?", (media_id,))
+        return self.jobs.submit("translate", f"Traduzir faixa embutida para {target}: {m['title'] if m else media_id}",
+                                {"media_id": media_id, "embedded_sub_id": sub_id, "target": target}, dedupe=True)
+
+    def translate_embedded(self, media_id: int, sub_id: int, target: str, ctx: "JobContext | None" = None) -> dict:
+        media = self.media_dict(media_id)
+        sub = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='embedded' AND present=1", (sub_id, media_id))
+        if not sub or not sub["text_based"] or sub["stream_index"] is None:
+            raise ServiceError("Faixa embutida não encontrada ou não é de texto.", 404)
+        if not self.settings.get("translation")["enabled"] or target not in self._targets():
+            raise ServiceError("Tradução desativada ou idioma de destino não suportado.", 403)
+        src = normalize_lang(sub["lang"])
+        deepl = self._deepl()
+        fname = f"{Path(media['path']).stem}.{src or 'und'}.srt"
+        r = SubtitleResult(provider="embedded", file_id=f"stream{sub['stream_index']}", language=src, release=Path(media["path"]).stem, file_name=fname,
+                           forced=bool(sub["forced"]), hearing_impaired=bool(sub["hi"]), format="srt", found_by="faixa embutida")
+        did = self.db.execute(
+            "INSERT INTO downloads(media_id,provider,provider_file_id,lang,release,file_name,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (media_id, "embedded", f"stream{sub['stream_index']}", target, r.release[:200], fname[:200], "preparing", now())).lastrowid
+        try:
+            if ctx:
+                ctx.step("A extrair a faixa embutida (pode demorar em ficheiros grandes)…", inc=0, message="A ler a faixa de legenda do vídeo", force=True)
+            data = fp.extract_subtitle_text(media["path"], sub["stream_index"], self.cfg.ffmpeg_bin)
+            if not data:
+                raise ServiceError("Não foi possível extrair a faixa (ffmpeg falhou, ficheiro inacessível ou faixa ilegível).", 422)
+            v = validate_download(fname, data, media)
+            ref = (f"faixa embutida #{sub['stream_index']} ({sub['lang'] or '?'})", v.parsed) if len(v.parsed.cues) >= 30 else None
+            return self._translate_finish(did, media, r, src, target, v, f"faixa embutida #{sub['stream_index']}", deepl, ctx, reference=ref, embedded=True)
+        except (InvalidDownload, ServiceError, DeepLError) as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
+            add_event(self.db, "translation", f"Tradução da faixa embutida falhou: {e}", "error", media_id)
+            raise ServiceError(str(e), getattr(e, "status", 502 if isinstance(e, DeepLError) else 422))
+        except Exception as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
+            raise
 
     def translate_prepare(self, media_id: int, result: dict, target: str, ctx: "JobContext | None" = None) -> dict:
         """Descarrega a legenda de origem, traduz o texto (tempos intactos) e deixa-a «por confirmar»."""
@@ -677,38 +768,7 @@ class App:
             df = self.provider(r.provider).download(r)
             self._count_download(r.provider)
             v = validate_download(df.name, df.data, media)
-            from .subtitles.parser import analyze
-            from .evaluator import Factor
-
-            def prog(done: int, total: int) -> None:
-                if ctx:
-                    if ctx.total == 0:
-                        ctx.set_total(total)
-                    ctx.step("A traduzir…", inc=1, message=f"Bloco {done} de {total}", force=True)
-            n_chars = count_chars(v.parsed.cues)
-            eng_label = "Gemini" if self._engine_name() == "gemini" else "DeepL"
-            usage = deepl.usage()
-            if usage.limit and n_chars > usage.remaining:
-                raise ServiceError(f"Quota {eng_label} insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
-            cues, sent = translate_cues(v.parsed.cues, target, src, deepl, prog)
-            text = to_srt(cues)
-            tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
-            s = self.settings.all()
-            ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
-            an = analyze(tv.parsed, media.get("duration"), size=len(text))
-            ev = evaluate_content(ev, media, tv.parsed, an, self._reference_for(media, target))
-            ev.score = max(0, ev.score - 15)
-            ev.factors.append(Factor(f"Tradução automática ({eng_label}): qualidade inferior a uma legenda humana", -15, "negative"))
-            kept = getattr(deepl, "untranslated", 0)
-            if kept:
-                ev.factors.append(Factor(f"{kept} falas ficaram no idioma original (recusadas pelo modelo)", -5, "negative"))
-                ev.notes.append(f"{kept} falas não foram traduzidas pelo modelo e mantêm o idioma original: reveja.")
-            ev.notes.append(f"Traduzida de «{src or 'idioma desconhecido'}» para «{target}»; os tempos são os da legenda original. "
-                            "Itálicos e formatação foram removidos. Reveja antes de usar.")
-            extra = {"translation": {"engine": self._engine_name(), "source_lang": src, "target": target, "characters": sent,
-                                      "source_file": df.name}}
-            add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, {eng_label})", "info", media_id)
-            return self._finish_prepare(did, media, r, target, tv, ev, an, extra)
+            return self._translate_finish(did, media, r, src, target, v, df.name, deepl, ctx)
         except (ProviderError, InvalidDownload, ServiceError, DeepLError) as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
             add_event(self.db, "translation", f"Tradução falhou: {e}", "error", media_id)

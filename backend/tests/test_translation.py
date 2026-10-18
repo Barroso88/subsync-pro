@@ -430,3 +430,43 @@ def test_gemini_paces_requests_and_slows_down_after_minute_limit(monkeypatch):
     g.translate([f"l{i}" for i in range(120)], "pt-PT", "en")                       # 3 blocos
     assert any(abs(s - 4.2) < 0.5 for s in sleeps)                                   # espaça os pedidos normais (~14/min)
     assert g._gap == 8.0 and any(s >= 7 for s in sleeps)                             # depois do 429: ritmo mais lento (e espera o retryDelay)
+
+
+def test_translate_embedded_track_as_background_job(client, monkeypatch):
+    from app import ffprobe as fp
+    calls = []
+    en = make_srt(120, 30_000, lang="en").encode()
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda path, idx, ffmpeg="ffmpeg", timeout=300: calls.append((path, idx)) or en)
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"]}})
+    item = e2(client)
+    sid = client.core.db.one("SELECT id FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1", (item["id"],))["id"]
+    assert calls == []                                                          # nada é extraído até o utilizador pedir
+    r = client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"})
+    assert r.status_code == 202
+    j = wait_job(client, r.json()["job_id"])
+    assert j["status"] == "done" and calls == [(item["path"], 2)], j
+    dl = j["result"]
+    assert dl["status"] == "prepared" and dl["provider"] == "embedded" and dl["lang"] == "pt-PT" and dl["dest_path"].endswith("S01E02.pt-PT.srt")
+    ev = dl["evaluation"]
+    assert ev["translation"]["embedded"] and ev["translation"]["source_file"] == "faixa embutida #2" and any("embutida" in n for n in ev["notes"])
+    inst = client.post(f"/api/downloads/{dl['id']}/install", json={"policy": "fail"}).json()
+    cues = parse_srt(open(inst["dest_path"], encoding="utf-8").read()).cues
+    assert len(cues) == 120 and cues[0].text.startswith("Tradução:") and cues[0].start_ms == 10_000        # tempos da faixa original
+    # recusas
+    assert client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "ja"}).status_code == 400
+    assert client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": 999999, "target": "pt-PT"}).status_code == 404
+    client.core.db.execute("UPDATE subtitles SET text_based=0 WHERE id=?", (sid,))
+    assert client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"}).status_code == 422   # imagem (PGS)
+    client.core.db.execute("UPDATE subtitles SET text_based=1, lang='pt-PT' WHERE id=?", (sid,))
+    assert client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"}).status_code == 400      # já em pt-PT
+
+
+def test_translate_embedded_extraction_failure_is_reported(client, monkeypatch):
+    from app import ffprobe as fp
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: None)
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"]}})
+    item = e2(client)
+    sid = client.core.db.one("SELECT id FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1", (item["id"],))["id"]
+    j = wait_job(client, client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"}).json()["job_id"])
+    assert j["status"] == "failed" and "Não foi possível extrair a faixa" in j["error"]
+    assert client.get("/api/downloads", params={"status": "prepared"}).json()["total"] == 0
