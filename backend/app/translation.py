@@ -136,6 +136,8 @@ class Gemini:
         self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
         self._sleep = time.sleep
         self._thinking = True           # tenta desligar o «pensar» do modelo (mais rápido); recua se o modelo o rejeitar
+        self._inline: bool | None = None    # None = automático (Gemma); True = instruções dentro da mensagem e JSON lido do texto
+        self._last_call = 0.0
 
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=120, follow_redirects=False, transport=self.transport,
@@ -197,13 +199,24 @@ class Gemini:
                   "Rules: return a JSON array of strings with EXACTLY the same number of items, same order; never merge, split, drop or add items; keep HTML tags such as <i></i> and "
                   "line breaks («\n») in place; keep names, numbers and sound-effect markers; keep it concise and natural for on-screen reading; do not add notes or explanations.")
         user = {"previous_lines_for_context_only": ctx[-3:], "items_to_translate": items}
-        body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": json.dumps(user, ensure_ascii=False)}]}],
-                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
-                                     "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}},
-                "safetySettings": self.SAFETY}
-        if self._thinking:
-            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+        inline = self._is_inline()
+        if inline:
+            # modelos sem «instruções de sistema» nem modo JSON (ex.: Gemma): tudo na mensagem, resposta lida do texto
+            prompt = (system + ' Respond with ONLY a JSON object of the form {"translations": ["...", "..."]} and nothing else (no markdown, no commentary).\n\nINPUT:\n'
+                      + json.dumps(user, ensure_ascii=False))
+            body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}, "safetySettings": self.SAFETY}
+        else:
+            body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": json.dumps(user, ensure_ascii=False)}]}],
+                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
+                                         "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}},
+                    "safetySettings": self.SAFETY}
+            if self._thinking:
+                body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         for attempt in range(5):
+            gap = self._min_interval() - (time.monotonic() - self._last_call)
+            if gap > 0:
+                self._sleep(gap)            # respeita o limite de tokens por minuto (Gemma: 16K/min no escalão gratuito)
+            self._last_call = time.monotonic()
             try:
                 r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
             except httpx.HTTPError as e:
@@ -223,8 +236,11 @@ class Gemini:
                 self._sleep(4 * (attempt + 1))
                 continue
             break
-        if r.status_code == 400 and self._thinking and "think" in r.text.lower():
+        if r.status_code == 400 and not inline and self._thinking and "think" in r.text.lower():
             self._thinking = False       # este modelo não aceita desligar o raciocínio: repete sem isso (e lembra-se)
+            return self._call(c, items, target, source, ctx)
+        if r.status_code == 400 and not inline and re.search(r"developer instruction|system instruction|mime|json mode|response_?schema|schema", r.text, re.I):
+            self._inline = True          # o modelo não suporta instruções de sistema / modo JSON: passa ao modo «na mensagem» (e lembra-se)
             return self._call(c, items, target, source, ctx)
         if r.status_code in (400, 401, 403):
             msg = ""
@@ -251,13 +267,31 @@ class Gemini:
             cand = (j.get("candidates") or [None])[0]
             if not cand or (j.get("promptFeedback") or {}).get("blockReason") or cand.get("finishReason") in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"):
                 return None
-            data = json.loads("".join(p.get("text", "") for p in cand["content"]["parts"]))
+            raw = "".join(p.get("text", "") for p in cand["content"]["parts"])
+            data = json.loads(self._extract_json(raw) if inline else raw)
             out = data["translations"] if isinstance(data, dict) else data
         except (ValueError, KeyError, TypeError):
             return None
         if not isinstance(out, list) or len(out) != len(items) or not all(isinstance(x, str) for x in out):
             return None
         return [x.strip() for x in out]
+
+    def _is_inline(self) -> bool:
+        return self._inline if self._inline is not None else self.model.lower().startswith("gemma")
+
+    def _min_interval(self) -> float:
+        return 8.0 if self.model.lower().startswith("gemma") else 0.0     # ~7 pedidos/min ≈ 14K tokens/min (limite gratuito do Gemma: 16K)
+
+    @staticmethod
+    def _extract_json(raw: str) -> str:
+        """Tira cercas de markdown e texto à volta: devolve o primeiro objeto/array JSON da resposta."""
+        t = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
+        starts = [i for i in (t.find("{"), t.find("[")) if i >= 0]
+        if not starts:
+            return t
+        i = min(starts)
+        j = max(t.rfind("}"), t.rfind("]"))
+        return t[i:j + 1] if j > i else t
 
     @staticmethod
     def _rate_info(r: httpx.Response) -> tuple[str, float]:

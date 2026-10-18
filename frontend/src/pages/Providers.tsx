@@ -98,7 +98,7 @@ function TranslationCard() {
   const [key, setKey] = useState("");
   const [model, setModel] = useState<string | null>(null);
   const [modelList, setModelList] = useState<string[] | null>(null);
-  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string; pairs?: { src: string; out: string }[] } | null>(null);
   const q = useQuery({ queryKey: ["translation"], queryFn: () => api.get<Tr>("/translation") });
   const t = q.data;
   const engine = t?.engine ?? "deepl";
@@ -114,8 +114,8 @@ function TranslationCard() {
     onError: (e: Error) => toast("bad", e.message),
   });
   const test = useMutation({
-    mutationFn: () => api.post<{ sample: string; model?: string }>("/translation/test"),
-    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona${r.model ? ` (modelo ${r.model})` : ""}. «Good morning, how are you?» → «${r.sample}»` }),
+    mutationFn: () => api.post<{ sample: string; model?: string; pairs?: { src: string; out: string }[] }>("/translation/test"),
+    onSuccess: (r) => setTestMsg({ ok: true, text: `Funciona${r.model ? ` (modelo ${r.model})` : ""}. Reveja a qualidade em pt-PT:`, pairs: r.pairs }),
     onError: (e: Error) => setTestMsg({ ok: false, text: e.message }),
   });
   const models = useMutation({
@@ -143,7 +143,7 @@ function TranslationCard() {
             <div className="flex gap-2"><input className="input" placeholder="automático" value={model ?? cfg.gemini_model ?? ""} onChange={(e) => setModel(e.target.value)} />
               <button className="btn-ghost" disabled={model === null || saveCfg.isPending} onClick={() => saveCfg.mutate({ gemini_model: (model ?? "").trim() }, { onSuccess: () => setModel(null) })}>Guardar</button>
               <button className="btn-ghost" disabled={!t?.configured || models.isPending} onClick={() => models.mutate()}>{models.isPending && <Loader2 size={14} className="animate-spin" />}Listar modelos</button></div>
-            {modelList && <div className="flex gap-1.5 flex-wrap mt-2">{modelList.filter((m) => m.includes("flash")).map((m) => <button key={m} className="h-6 px-2 rounded-md text-xs border border-line text-mute hover:text-fg" onClick={() => setModel(m)}>{m}</button>)}
+            {modelList && <div className="flex gap-1.5 flex-wrap mt-2">{modelList.filter((m) => m.includes("flash") || m.includes("gemma")).map((m) => <button key={m} className="h-6 px-2 rounded-md text-xs border border-line text-mute hover:text-fg" onClick={() => setModel(m)}>{m}</button>)}
               {modelList.length === 0 && <span className="text-xs text-dim">Nenhum modelo devolvido.</span>}</div>}
           </Field>
         )}
@@ -154,7 +154,8 @@ function TranslationCard() {
             <button className="btn-ghost" disabled={q.isFetching || test.isPending || !t?.configured} onClick={() => { setTestMsg(null); if (gem) test.mutate(); else q.refetch(); }}>{(q.isFetching || test.isPending) && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
         </Field>
       </div>
-      {testMsg && <div className={`mt-3 text-sm flex gap-2 ${testMsg.ok ? "text-ok" : "text-bad"}`}>{testMsg.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <XCircle size={16} className="mt-0.5 shrink-0" />}{testMsg.text}</div>}
+      {testMsg && <div className={`mt-3 text-sm flex gap-2 ${testMsg.ok ? "text-ok" : "text-bad"}`}>{testMsg.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <XCircle size={16} className="mt-0.5 shrink-0" />}<div>{testMsg.text}
+        {testMsg.pairs && <div className="mt-2 space-y-1 text-xs text-fg">{testMsg.pairs.map((p, i) => <div key={i}><span className="text-mute">{p.src}</span> → <b>{p.out}</b></div>)}</div>}</div></div>}
       {t?.error && <div className="mt-3 text-sm text-bad flex gap-2"><XCircle size={16} className="mt-0.5" />{t.error}</div>}
       {t?.usage && (
         <div className="mt-4 max-w-xl">

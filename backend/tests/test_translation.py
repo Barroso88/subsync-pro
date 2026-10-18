@@ -340,3 +340,39 @@ def test_gemini_rate_limits_wait_for_minute_limit_but_stop_on_daily_limit():
     with pytest.raises(DeepLError) as e:
         day.translate(["a"], "pt-PT", "en")
     assert e.value.quota and "diário" in str(e.value) and not sleeps                           # limite diário: falha logo, sem esperar em vão
+
+
+def test_gemma_uses_inline_prompt_and_parses_fenced_json_and_paces_requests():
+    bodies, sleeps = [], []
+
+    def h(req: httpx.Request):
+        body = json.loads(req.content)
+        bodies.append(body)
+        assert "systemInstruction" not in body and "responseMimeType" not in body["generationConfig"] and "thinkingConfig" not in body["generationConfig"]
+        prompt = body["contents"][0]["parts"][0]["text"]
+        items = json.loads(prompt.split("INPUT:\n", 1)[1])["items_to_translate"]
+        text = "Claro! Aqui está:\n```json\n" + json.dumps({"translations": [f"PT:{t}" for t in items]}) + "\n```"
+        return httpx.Response(200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": text}]}}]})
+    g = Gemini("GKEY", "gemma-4-31b-it", httpx.MockTransport(h))
+    g._sleep = sleeps.append
+    texts = [f"line {i}" for i in range(90)]
+    assert g.translate(texts, "pt-PT", "en") == [f"PT:{t}" for t in texts] and len(bodies) == 3
+    assert "European Portuguese" in bodies[0]["contents"][0]["parts"][0]["text"]
+    assert len([s for s in sleeps if s > 0]) >= 2                                            # espaçou os pedidos (limite de tokens/min)
+
+
+def test_unknown_model_falls_back_to_inline_when_system_instructions_rejected():
+    seen = []
+
+    def h(req: httpx.Request):
+        body = json.loads(req.content)
+        if "systemInstruction" in body:
+            seen.append("sys")
+            return httpx.Response(400, json={"error": {"message": "Developer instruction is not enabled for models/novo-modelo"}})
+        seen.append("inline")
+        items = json.loads(body["contents"][0]["parts"][0]["text"].split("INPUT:\n", 1)[1])["items_to_translate"]
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(["PT:" + t for t in items])}]}}]})   # array simples também serve
+    g = Gemini("GKEY", "novo-modelo", httpx.MockTransport(h))
+    assert g.translate(["a", "b"], "pt-BR", "en") == ["PT:a", "PT:b"] and seen == ["sys", "inline"]
+    g.translate(["c"], "pt-BR", "en")
+    assert seen[-1] == "inline" and seen.count("sys") == 1                                   # lembra-se
