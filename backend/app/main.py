@@ -262,7 +262,17 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         d = {k: m[k] for k in ("id", "kind", "title", "year", "series_title", "season", "episode", "episode_title",
                                "file_name", "path", "duration", "width", "height", "video_codec", "fps", "plex_key",
                                "library_id", "imdb_id", "tmdb_id", "radarr_id", "radarr_title") if k in m}
-        d["added_at"] = m.get("added_at") or (datetime.fromtimestamp(m["mtime"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if m.get("mtime") else None)
+        limit = datetime.now(timezone.utc).timestamp() + 86400
+        added = m.get("added_at")
+        if added:
+            try:
+                if datetime.fromisoformat(added.replace("Z", "+00:00")).timestamp() > limit:
+                    added = None                                     # data no futuro: não é uma data de adição real
+            except ValueError:
+                added = None
+        if not added and m.get("mtime") and m["mtime"] <= limit:
+            added = datetime.fromtimestamp(m["mtime"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        d["added_at"] = added
         d["file_title"] = m.get("title")                       # título deduzido do nome do ficheiro
         d["title"] = (m.get("radarr_title") or "").strip() or m.get("title")   # título principal: o do Radarr (ex.: em português), se existir
         d["has_poster"] = bool(m.get("poster"))
@@ -275,7 +285,9 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         return d
 
     # data de adição: Plex > Radarr/Sonarr (ficheiro importado) > data de modificação do ficheiro
-    _ADDED = "COALESCE(m.added_at, strftime('%Y-%m-%dT%H:%M:%SZ', m.mtime, 'unixepoch'))"
+    # datas no futuro (ex.: 2098, usadas por vezes para «fixar» filmes no topo) não são datas de adição reais: ignoram-se
+    _ADDED = ("CASE WHEN m.added_at IS NOT NULL AND m.added_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now','+1 day') THEN m.added_at "
+              "WHEN m.mtime <= CAST(strftime('%s','now') AS REAL) + 86400 THEN strftime('%Y-%m-%dT%H:%M:%SZ', m.mtime, 'unixepoch') ELSE NULL END")
 
     def _filtered_media(kind, q, lang, status, series, season, sort) -> list[dict]:
         args: list[Any] = []
@@ -293,7 +305,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                          "EXISTS(SELECT 1 FROM subtitles s WHERE s.media_id=m.id AND s.present=1 AND (lower(coalesce(s.lang,'')) LIKE ? OR lower(s.path) LIKE ?)))")
             args += [like, like, like, like, q.strip(), like, like, like]
         order = {"title": "lower(coalesce(m.series_title, nullif(m.radarr_title,''), m.title)), m.season, m.episode, lower(coalesce(nullif(m.radarr_title,''), m.title))", "year": "m.year DESC, lower(m.title)",
-                 "added": f"{_ADDED} DESC, m.id DESC", "recent": f"{_ADDED} DESC, m.id DESC", "added_old": f"{_ADDED} ASC, m.id ASC"}.get(sort, "lower(m.title)")
+                 "added": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "recent": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "added_old": f"({_ADDED}) IS NULL, {_ADDED} ASC, m.id ASC"}.get(sort, "lower(m.title)")
         rows_ = core.db.query(f"SELECT m.* FROM media_items m WHERE {' AND '.join(where)} ORDER BY {order}", args)
         covs = cov.compute(core.db, core.settings)  # derivado dos dados reais
         out = []
