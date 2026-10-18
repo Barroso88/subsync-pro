@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ---- 1) frontend ------------------------------------------------------------
-FROM node:22-alpine AS web
+# o frontend compila-se sempre na plataforma do construtor (não em emulação QEMU): o resultado (HTML/JS) é igual para amd64 e arm64
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
