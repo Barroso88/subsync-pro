@@ -139,7 +139,7 @@ function TranslationCard() {
             <option value="deepl">DeepL</option><option value="gemini">Gemini (Google AI Studio)</option></select>
         </Field>
         {gem && (
-          <Field label="Modelo Gemini" hint="Vazio = automático (recomendado): a app escolhe o Flash mais recente que a sua chave pode usar. Use «Listar modelos» para ver o que está disponível.">
+          <Field label="Modelo Gemini" hint="Vazio = automático (recomendado): a app escolhe o «flash-lite» mais recente (limites gratuitos muito maiores) ou, se não houver, o Flash mais recente. Use «Listar modelos» para ver o que está disponível.">
             <div className="flex gap-2"><input className="input" placeholder="automático" value={model ?? cfg.gemini_model ?? ""} onChange={(e) => setModel(e.target.value)} />
               <button className="btn-ghost" disabled={model === null || saveCfg.isPending} onClick={() => saveCfg.mutate({ gemini_model: (model ?? "").trim() }, { onSuccess: () => setModel(null) })}>Guardar</button>
               <button className="btn-ghost" disabled={!t?.configured || models.isPending} onClick={() => models.mutate()}>{models.isPending && <Loader2 size={14} className="animate-spin" />}Listar modelos</button></div>

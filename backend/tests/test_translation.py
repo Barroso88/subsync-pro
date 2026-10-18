@@ -260,13 +260,13 @@ def test_gemini_auto_model_picks_latest_flash_and_404_suggests_models():
     Gemini._AUTO.clear()
     g = Gemini("GKEY", transport=gem_transport([]))
     assert g.translate(["hello"], "pt-PT", "en") == ["PT:hello"]
-    assert g.model == "gemini-3.8-flash" and seen_models[-1].endswith("/models/gemini-3.8-flash:generateContent")      # ignora lite/preview/modelos antigos
-    assert Gemini.pick_flash(["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash-preview"]) == "gemini-2.5-flash"
+    assert g.model == "gemini-3.5-flash-lite" and seen_models[-1].endswith("/models/gemini-3.5-flash-lite:generateContent")   # prefere o lite (limites do escalão gratuito)
+    assert Gemini.pick_flash(["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.8-flash-preview"]) == "gemini-3.8-flash"    # sem lite: o flash mais recente
     assert Gemini.pick_flash(["embedding-001"]) is None
     old = Gemini("GKEY", "gemini-2.5-flash", gem_transport([]))                            # modelo fixo e já inexistente
     with pytest.raises(DeepLError) as e:
         old.translate(["x"], "pt-PT", "en")
-    assert "não encontrado" in str(e.value) and "gemini-3.8-flash" in str(e.value) and "automático" in str(e.value)
+    assert "não encontrado" in str(e.value) and "gemini-3.5-flash-lite" in str(e.value) and "automático" in str(e.value)
     Gemini._AUTO.clear()
 
 
@@ -319,3 +319,24 @@ def test_gemini_thinking_off_falls_back_when_model_rejects_it():
     assert g.translate(["a", "b"], "pt-PT", "en") == ["PT:a", "PT:b"] and seen == [True, False]
     g.translate(["c"], "pt-PT", "en")
     assert seen[-1] is False                                                                 # lembra-se: não volta a tentar
+
+
+def test_gemini_rate_limits_wait_for_minute_limit_but_stop_on_daily_limit():
+    sleeps, n = [], {"c": 0}
+
+    def minute(req):
+        n["c"] += 1
+        if n["c"] <= 2:
+            return httpx.Response(429, json={"error": {"message": "quota", "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}})
+        body = json.loads(req.content)
+        return gem_resp([f"PT:{t}" for t in json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]])
+    g = Gemini("GKEY", "gemini-test", httpx.MockTransport(minute))
+    g._sleep = sleeps.append
+    assert g.translate(["a"], "pt-PT", "en") == ["PT:a"] and sleeps == [8.0, 8.0]            # espera o retryDelay indicado (+1 s) e repete
+
+    day = Gemini("GKEY", "gemini-test", httpx.MockTransport(lambda r: httpx.Response(429, json={"error": {"message": "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})))
+    day._sleep = sleeps.append
+    sleeps.clear()
+    with pytest.raises(DeepLError) as e:
+        day.translate(["a"], "pt-PT", "en")
+    assert e.value.quota and "diário" in str(e.value) and not sleeps                           # limite diário: falha logo, sem esperar em vão

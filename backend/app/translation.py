@@ -164,13 +164,16 @@ class Gemini:
 
     @staticmethod
     def pick_flash(names: list[str]) -> str | None:
-        """O «gemini-X[.Y]-flash» estável mais recente (sem lite/preview/imagem/áudio)."""
-        best, best_v = None, (-1.0,)
-        for n in names:
-            m = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", n)
-            if m and (float(m.group(1)),) > best_v:
-                best, best_v = n, (float(m.group(1)),)
-        return best
+        """O melhor modelo para o escalão gratuito: o «flash-lite» estável mais recente (limites muito mais altos: no AI Studio, 15 pedidos/min e 500/dia
+        contra 5/min e 20/dia dos Flash normais); se não houver, o «flash» estável mais recente. Sem preview/imagem/áudio."""
+        def newest(pattern: str) -> str | None:
+            best, best_v = None, -1.0
+            for n in names:
+                m = re.fullmatch(pattern, n)
+                if m and float(m.group(1)) > best_v:
+                    best, best_v = n, float(m.group(1))
+            return best
+        return newest(r"gemini-(\d+(?:\.\d+)?)-flash-lite") or newest(r"gemini-(\d+(?:\.\d+)?)-flash")
 
     def _ensure_model(self, c: httpx.Client) -> None:
         if self.model:
@@ -200,7 +203,7 @@ class Gemini:
                 "safetySettings": self.SAFETY}
         if self._thinking:
             body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
-        for attempt in range(4):
+        for attempt in range(5):
             try:
                 r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
             except httpx.HTTPError as e:
@@ -208,7 +211,15 @@ class Gemini:
                     raise DeepLError(f"Sem ligação ao Gemini: {type(e).__name__}") from e
                 self._sleep(2 * (attempt + 1))
                 continue
-            if r.status_code in (429, 500, 503) and attempt < 3:
+            if r.status_code == 429:
+                kind, delay = self._rate_info(r)
+                if kind == "day":
+                    raise DeepLError(f"Limite diário de pedidos do Gemini esgotado para o modelo «{self.model}» (escalão gratuito). Tente amanhã, ative o faturamento "
+                                     "ou escolha um modelo com limite diário maior (ex.: um «flash-lite»; veja Fornecedores → Listar modelos).", quota=True)
+                if attempt < 4:
+                    self._sleep(delay)          # limite por minuto: espera o que o Google indica (ou 15 s) e repete
+                    continue
+            elif r.status_code in (500, 503) and attempt < 3:
                 self._sleep(4 * (attempt + 1))
                 continue
             break
@@ -247,6 +258,21 @@ class Gemini:
         if not isinstance(out, list) or len(out) != len(items) or not all(isinstance(x, str) for x in out):
             return None
         return [x.strip() for x in out]
+
+    @staticmethod
+    def _rate_info(r: httpx.Response) -> tuple[str, float]:
+        """429 do Gemini: («day»|«minute», segundos a esperar). O Google indica o quotaId violado e o retryDelay."""
+        text, delay = r.text, 15.0
+        try:
+            for d in r.json().get("error", {}).get("details", []):
+                if str(d.get("@type", "")).endswith("RetryInfo"):
+                    m = re.match(r"([\d.]+)s", str(d.get("retryDelay", "")))
+                    if m:
+                        delay = float(m.group(1))
+        except (ValueError, AttributeError):
+            pass
+        kind = "day" if re.search(r"PerDay|per day|RequestsPerDay", text, re.I) else "minute"
+        return kind, min(max(delay, 2.0) + 1.0, 90.0)
 
     def _chunk(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str], depth: int = 0) -> list[str]:
         res = self._call(c, items, target, source, ctx)
