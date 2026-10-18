@@ -129,7 +129,8 @@ class Gemini:
 
     BASE_GAP = 4.2        # s entre pedidos (≈14/min: dentro dos 15/min do escalão gratuito dos Flash-Lite); sobe sozinho se houver 429 por minuto
     GEMMA_GAP = 8.0       # ≈7/min ≈ 14K tokens/min (limite gratuito do Gemma: 16K)
-    _AUTO: dict[str, tuple[float, str]] = {}     # chave -> (quando, modelo escolhido automaticamente)
+    _AUTO: dict[str, tuple[float, str]] = {}
+    _SHARED: dict[str, dict] = {}        # por chave: instante do último pedido e espaçamento aprendido (partilhados entre traduções consecutivas)     # chave -> (quando, modelo escolhido automaticamente)
 
     def __init__(self, key: str, model: str = "", transport: httpx.BaseTransport | None = None):
         self.key, self.transport = key, transport
@@ -140,8 +141,7 @@ class Gemini:
         # escada de compatibilidade: 0 = completo (instrução de sistema + JSON + sem raciocínio + sem filtros); 1 = sem «thinkingConfig»;
         # 2 = sem «safetySettings»; 3 = instruções na mensagem e JSON lido do texto. Sobe quando o modelo responde 400 e lembra-se.
         self._level = 0
-        self._last_call = 0.0
-        self._gap = 0.0                      # espaçamento extra aprendido com os 429 por minuto
+        self._sh = Gemini._SHARED.setdefault(key, {"last": 0.0, "gap": 0.0})
         self.timeout = 120.0                 # por pedido
         self.deadline: float | None = None   # instante limite (time.monotonic) para o conjunto, usado no «Testar»
         self.stats = {"requests": 0, "rate_limited": 0, "invalid": 0, "slowest": 0.0}
@@ -224,12 +224,12 @@ class Gemini:
             if self._level == 0:
                 body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         for attempt in range(5):
-            gap = self._min_interval() - (time.monotonic() - self._last_call)
+            gap = self._min_interval() - (time.monotonic() - self._sh["last"])
             if gap > 0:
                 self._time_check(gap)
                 self._sleep(gap)            # respeita o limite de tokens por minuto (Gemma: 16K/min no escalão gratuito)
             self._time_check()
-            self._last_call = t0 = time.monotonic()
+            self._sh["last"] = t0 = time.monotonic()
             try:
                 r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
                 self.stats["requests"] += 1
@@ -252,7 +252,7 @@ class Gemini:
                 if kind == "day":
                     raise DeepLError(f"Limite diário de pedidos do Gemini esgotado para o modelo «{self.model}» (escalão gratuito). Tente amanhã, ative o faturamento "
                                      "ou escolha um modelo com limite diário maior (ex.: um «flash-lite»; veja Fornecedores → Listar modelos).", quota=True)
-                self._gap = min(max(self._gap * 2, 8.0), 15.0)      # limite por minuto: abranda o ritmo dos pedidos seguintes (5/min → 12 s)
+                self._sh["gap"] = min(max(self._sh["gap"] * 2, 8.0), 15.0)      # limite por minuto: abranda o ritmo dos pedidos seguintes (5/min → 12 s)
                 if attempt < 4:
                     self._time_check(delay)
                     self._sleep(delay)          # limite por minuto: espera o que o Google indica (ou 15 s) e repete
@@ -326,7 +326,7 @@ class Gemini:
 
     def _min_interval(self) -> float:
         base = self.GEMMA_GAP if self.model.lower().startswith("gemma") else self.BASE_GAP
-        return max(base, self._gap)
+        return max(base, self._sh["gap"])
 
     @staticmethod
     def _extract_json(raw: str) -> str:

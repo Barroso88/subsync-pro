@@ -82,7 +82,7 @@ function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
     onSuccess: (r) => setJob(r.job_id), onError: (e: Error) => { toast("bad", e.message); setAsk(false); },
   });
   const jq = useQuery({ queryKey: ["translate-embedded-job", job], enabled: job != null,
-    queryFn: () => api.get<{ status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${job}`),
+    queryFn: () => api.get<{ queue_position: number | null; status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${job}`),
     refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
   const running = job != null && (!jq.data || ["queued", "running"].includes(jq.data.status));
   useEffect(() => {
@@ -108,9 +108,9 @@ function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
         <div className="space-y-3 text-sm">
           {running && (
             <div className="card bg-s2 p-3.5 space-y-2">
-              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{jq.data?.current || "A iniciar…"}</div>
+              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{jq.data?.status === "queued" ? `Em fila de espera${jq.data.queue_position ? ` (${jq.data.queue_position} à frente)` : " (a seguir)"}` : jq.data?.current || "A iniciar…"}</div>
               <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${jq.data?.total ? pct : 4}%` }} /></div>
-              <div className="flex justify-between text-xs text-mute"><span>{jq.data?.message || "A preparar…"}</span><span className="tabular-nums">{jq.data?.total ? `${Math.round(pct)} %` : ""}</span></div>
+              <div className="flex justify-between text-xs text-mute"><span>{jq.data?.status === "queued" ? "As traduções correm uma de cada vez, por causa dos limites do serviço" : jq.data?.message || "A preparar…"}</span><span className="tabular-nums">{jq.data?.total ? `${Math.round(pct)} %` : ""}</span></div>
               <div className="text-xs text-dim">Pode fechar esta janela: continua em segundo plano (Tarefas e atividade) e a legenda fica em «Histórico de downloads» por confirmar.</div>
             </div>
           )}
@@ -261,7 +261,7 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
     onError: (e: Error) => { toast("bad", e.message); setAskTr(null); },
   });
   const trJobQ = useQuery({ queryKey: ["translate-job", trJob], enabled: trJob != null,
-    queryFn: () => api.get<{ id: number; status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${trJob}`),
+    queryFn: () => api.get<{ id: number; queue_position: number | null; status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: Download | null }>(`/jobs/${trJob}`),
     refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
   const trRunning = trJob != null && (!trJobQ.data || ["queued", "running"].includes(trJobQ.data.status));
   useEffect(() => {
@@ -339,9 +339,9 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
         <div className="space-y-3 text-sm">
           {trRunning && (
             <div className="card bg-s2 p-3.5 space-y-2">
-              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{trJobQ.data?.current || "A iniciar…"}</div>
+              <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{trJobQ.data?.status === "queued" ? `Em fila de espera${trJobQ.data.queue_position ? ` (${trJobQ.data.queue_position} à frente)` : " (a seguir)"}` : trJobQ.data?.current || "A iniciar…"}</div>
               <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${trJobQ.data?.total ? Math.min(100, (100 * trJobQ.data.progress) / trJobQ.data.total) : 4}%` }} /></div>
-              <div className="flex justify-between text-xs text-mute"><span>{trJobQ.data?.message || "A preparar…"}</span><span className="tabular-nums">{trJobQ.data?.total ? `${Math.round((100 * trJobQ.data.progress) / trJobQ.data.total)} %` : ""}</span></div>
+              <div className="flex justify-between text-xs text-mute"><span>{trJobQ.data?.status === "queued" ? "As traduções correm uma de cada vez, por causa dos limites do serviço" : trJobQ.data?.message || "A preparar…"}</span><span className="tabular-nums">{trJobQ.data?.total ? `${Math.round((100 * trJobQ.data.progress) / trJobQ.data.total)} %` : ""}</span></div>
               <div className="text-xs text-dim">Pode fechar esta janela: a tradução continua em segundo plano (Tarefas e atividade) e, quando acabar, a legenda fica em «Histórico de downloads» por confirmar.</div>
             </div>
           )}

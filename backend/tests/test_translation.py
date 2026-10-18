@@ -334,6 +334,7 @@ def test_gemini_rate_limits_wait_for_minute_limit_but_stop_on_daily_limit():
     g._sleep = sleeps.append
     assert g.translate(["a"], "pt-PT", "en") == ["PT:a"] and sleeps[0] == 8.0 and sleeps.count(8.0) >= 2      # espera o retryDelay indicado (+1 s) e repete
 
+    Gemini._SHARED.clear()                                            # o ritmo aprendido é partilhado por chave: começa limpo
     day = Gemini("GKEY", "gemini-test", httpx.MockTransport(lambda r: httpx.Response(429, json={"error": {"message": "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})))
     day._sleep = sleeps.append
     sleeps.clear()
@@ -429,7 +430,7 @@ def test_gemini_paces_requests_and_slows_down_after_minute_limit(monkeypatch):
     g._sleep = sleeps.append
     g.translate([f"l{i}" for i in range(120)], "pt-PT", "en")                       # 3 blocos
     assert any(abs(s - 4.2) < 0.5 for s in sleeps)                                   # espaça os pedidos normais (~14/min)
-    assert g._gap == 8.0 and any(s >= 7 for s in sleeps)                             # depois do 429: ritmo mais lento (e espera o retryDelay)
+    assert g._sh["gap"] == 8.0 and any(s >= 7 for s in sleeps)                             # depois do 429: ritmo mais lento (e espera o retryDelay)
 
 
 def test_translate_embedded_track_as_background_job(client, monkeypatch):
@@ -470,3 +471,34 @@ def test_translate_embedded_extraction_failure_is_reported(client, monkeypatch):
     j = wait_job(client, client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"}).json()["job_id"])
     assert j["status"] == "failed" and "Não foi possível extrair a faixa" in j["error"]
     assert client.get("/api/downloads", params={"status": "prepared"}).json()["total"] == 0
+
+
+def test_translation_jobs_run_one_at_a_time_in_a_queue_and_queued_can_be_cancelled(client):
+    import threading
+    jobs = client.core.jobs
+    gate, running, order, peak = threading.Event(), [0], [], [0]
+
+    def slow(ctx, p):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        order.append(p["n"])
+        gate.wait(5)
+        running[0] -= 1
+        return {"n": p["n"]}
+    jobs.register("translate", slow, lane="translate")                     # mesma fila das traduções reais
+    ids = [jobs.submit("translate", f"t{n}", {"n": n}) for n in range(3)]
+    for _ in range(100):
+        if order:
+            break
+        time.sleep(0.02)
+    st = [client.get(f"/api/jobs/{i}").json() for i in ids]
+    assert [j["status"] for j in st] == ["running", "queued", "queued"]                        # só uma corre; as outras esperam
+    assert [j["queue_position"] for j in st] == [None, 1, 2]                                   # posição na fila (1 = a seguir)
+    assert client.post(f"/api/jobs/{ids[2]}/cancel").json()["cancelled"] and client.get(f"/api/jobs/{ids[2]}").json()["status"] == "cancelled"   # cancela já, sem esperar a vez
+    gate.set()
+    for i in ids[:2]:
+        for _ in range(200):
+            if client.get(f"/api/jobs/{i}").json()["status"] == "done":
+                break
+            time.sleep(0.02)
+    assert order == [0, 1] and peak[0] == 1                                                      # nunca duas em simultâneo; a cancelada nunca correu

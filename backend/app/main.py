@@ -237,6 +237,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
             raise HTTPException(404, "Tarefa não encontrada")
         d = dict(r)
         d["params"], d["result"] = jloads(d["params"], {}), jloads(d["result"])
+        d["queue_position"] = core.jobs.queue_position(jid)
         return d
 
     @api.post("/jobs/{jid}/cancel")

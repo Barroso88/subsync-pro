@@ -60,9 +60,25 @@ class JobManager:
         self._events: dict[int, threading.Event] = {}
         self._lock = threading.Lock()
         self.handlers: dict[str, Callable[[JobContext, dict], Any]] = {}
+        self.lanes: dict[str, ThreadPoolExecutor] = {}       # filas de 1 trabalhador: tarefas do mesmo tipo correm UMA de cada vez (ex.: traduções, por causa dos limites)
+        self.lane_of: dict[str, str] = {}
 
-    def register(self, jtype: str, fn: Callable[[JobContext, dict], Any]) -> None:
+    def register(self, jtype: str, fn: Callable[[JobContext, dict], Any], lane: str | None = None) -> None:
         self.handlers[jtype] = fn
+        if lane:
+            self.lane_of[jtype] = lane
+            if lane not in self.lanes:
+                self.lanes[lane] = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"lane-{lane}")
+
+    def queue_position(self, jid: int) -> int | None:
+        """Posição na fila (1 = a seguir ao que está a correr; 0 = a correr/não aplicável) para tipos com fila própria."""
+        r = self.db.one("SELECT type,status FROM jobs WHERE id=?", (jid,))
+        if not r or r["type"] not in self.lane_of or r["status"] != "queued":
+            return None
+        lane = self.lane_of[r["type"]]
+        types = [t for t, l in self.lane_of.items() if l == lane]
+        q = ",".join("?" * len(types))
+        return self.db.scalar(f"SELECT COUNT(*) FROM jobs WHERE type IN ({q}) AND status IN ('queued','running') AND id<?", (*types, jid)) or 0
 
     def mark_interrupted(self) -> None:
         self.db.execute(
@@ -82,7 +98,7 @@ class JobManager:
         jid = cur.lastrowid
         with self._lock:
             self._events[jid] = threading.Event()
-        self.pool.submit(self._run, jid, jtype, params)
+        (self.lanes[self.lane_of[jtype]] if jtype in self.lane_of else self.pool).submit(self._run, jid, jtype, params)
         return jid
 
     def _run(self, jid: int, jtype: str, params: dict) -> None:
@@ -118,9 +134,12 @@ class JobManager:
             return False
         ev.set()
         self.db.execute("UPDATE jobs SET cancel_requested=1 WHERE id=?", (jid,))
+        self.db.execute("UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status='queued'", (now(), jid))   # ainda na fila: cancela já
         return True
 
     def shutdown(self) -> None:
         for ev in list(self._events.values()):
             ev.set()
         self.pool.shutdown(wait=False, cancel_futures=True)
+        for p in self.lanes.values():
+            p.shutdown(wait=False, cancel_futures=True)

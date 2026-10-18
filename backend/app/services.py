@@ -56,6 +56,7 @@ class App:
         self.transport = transport      # injeção para testes
         self.jobs = JobManager(self.db, cfg.max_jobs)
         self._ref_cache: dict = {}
+        self._tr_lock = threading.Lock()
         self._ref_lock = threading.Lock()
         self.jobs.mark_interrupted()
         self.scanner = Scanner(self.db, self.settings, cfg.ffprobe_bin, cfg.ffprobe_workers, cfg.ffmpeg_bin)
@@ -71,7 +72,7 @@ class App:
         self.jobs.register("webhook_import", self._job_webhook_import)
         self.jobs.register("bazarr_batch", self._job_bazarr_batch)
         self.jobs.register("convert_scan", self._job_convert_scan)
-        self.jobs.register("translate", self._job_translate)
+        self.jobs.register("translate", self._job_translate, lane="translate")   # uma tradução de cada vez (limites dos serviços)
         self.jobs.register("convert_batch", self._job_convert_batch)
 
     # ---- ciclo de vida -----------------------------------------------------
@@ -715,7 +716,14 @@ class App:
         usage = deepl.usage()
         if usage.limit and n_chars > usage.remaining:
             raise ServiceError(f"Quota {eng_label} insuficiente: a tradução precisa de ~{n_chars} caracteres e restam {usage.remaining}.", 429)
-        cues, sent = translate_cues(v.parsed.cues, target, src, deepl, prog)
+        # uma tradução de cada vez em toda a app (também as do lote automático): partilham os limites do serviço
+        while not self._tr_lock.acquire(timeout=1.0):
+            if ctx:
+                ctx.step("Em espera por outra tradução…", inc=0, message="Em fila: há outra tradução em curso", force=True)
+        try:
+            cues, sent = translate_cues(v.parsed.cues, target, src, deepl, prog)
+        finally:
+            self._tr_lock.release()
         text = to_srt(cues)
         tv = validate_download("traduzida.srt", text.encode("utf-8"), media)   # revalida o resultado
         s = self.settings.all()
