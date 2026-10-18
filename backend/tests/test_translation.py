@@ -332,7 +332,7 @@ def test_gemini_rate_limits_wait_for_minute_limit_but_stop_on_daily_limit():
         return gem_resp([f"PT:{t}" for t in json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]])
     g = Gemini("GKEY", "gemini-test", httpx.MockTransport(minute))
     g._sleep = sleeps.append
-    assert g.translate(["a"], "pt-PT", "en") == ["PT:a"] and sleeps == [8.0, 8.0]            # espera o retryDelay indicado (+1 s) e repete
+    assert g.translate(["a"], "pt-PT", "en") == ["PT:a"] and sleeps[0] == 8.0 and sleeps.count(8.0) >= 2      # espera o retryDelay indicado (+1 s) e repete
 
     day = Gemini("GKEY", "gemini-test", httpx.MockTransport(lambda r: httpx.Response(429, json={"error": {"message": "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})))
     day._sleep = sleeps.append
@@ -413,3 +413,20 @@ def test_generic_400_invalid_argument_simplifies_request_step_by_step():
     with pytest.raises(DeepLError) as e:
         always.translate(["a"], "pt-PT", "en")
     assert "gemini-teimoso" in str(e.value) and "já tentado" in str(e.value)                      # a mensagem diz o modelo e o que foi tentado
+
+
+def test_gemini_paces_requests_and_slows_down_after_minute_limit(monkeypatch):
+    monkeypatch.setattr(Gemini, "BASE_GAP", 4.2)
+    sleeps, n = [], {"c": 0}
+
+    def h(req):
+        n["c"] += 1
+        if n["c"] == 2:
+            return httpx.Response(429, json={"error": {"message": "x", "details": [{"@type": "x.RetryInfo", "retryDelay": "3s"}]}})
+        body = json.loads(req.content)
+        return gem_resp([f"PT:{t}" for t in json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]])
+    g = Gemini("GKEY", "gemini-3.5-flash-lite", httpx.MockTransport(h))
+    g._sleep = sleeps.append
+    g.translate([f"l{i}" for i in range(120)], "pt-PT", "en")                       # 3 blocos
+    assert any(abs(s - 4.2) < 0.5 for s in sleeps)                                   # espaça os pedidos normais (~14/min)
+    assert g._gap == 8.0 and any(s >= 7 for s in sleeps)                             # depois do 429: ritmo mais lento (e espera o retryDelay)

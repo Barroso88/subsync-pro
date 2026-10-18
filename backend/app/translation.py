@@ -127,6 +127,8 @@ class Gemini:
     SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in
               ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
 
+    BASE_GAP = 4.2        # s entre pedidos (≈14/min: dentro dos 15/min do escalão gratuito dos Flash-Lite); sobe sozinho se houver 429 por minuto
+    GEMMA_GAP = 8.0       # ≈7/min ≈ 14K tokens/min (limite gratuito do Gemma: 16K)
     _AUTO: dict[str, tuple[float, str]] = {}     # chave -> (quando, modelo escolhido automaticamente)
 
     def __init__(self, key: str, model: str = "", transport: httpx.BaseTransport | None = None):
@@ -139,6 +141,7 @@ class Gemini:
         # 2 = sem «safetySettings»; 3 = instruções na mensagem e JSON lido do texto. Sobe quando o modelo responde 400 e lembra-se.
         self._level = 0
         self._last_call = 0.0
+        self._gap = 0.0                      # espaçamento extra aprendido com os 429 por minuto
         self.timeout = 120.0                 # por pedido
         self.deadline: float | None = None   # instante limite (time.monotonic) para o conjunto, usado no «Testar»
         self.stats = {"requests": 0, "rate_limited": 0, "invalid": 0, "slowest": 0.0}
@@ -249,6 +252,7 @@ class Gemini:
                 if kind == "day":
                     raise DeepLError(f"Limite diário de pedidos do Gemini esgotado para o modelo «{self.model}» (escalão gratuito). Tente amanhã, ative o faturamento "
                                      "ou escolha um modelo com limite diário maior (ex.: um «flash-lite»; veja Fornecedores → Listar modelos).", quota=True)
+                self._gap = min(max(self._gap * 2, 8.0), 15.0)      # limite por minuto: abranda o ritmo dos pedidos seguintes (5/min → 12 s)
                 if attempt < 4:
                     self._time_check(delay)
                     self._sleep(delay)          # limite por minuto: espera o que o Google indica (ou 15 s) e repete
@@ -321,7 +325,8 @@ class Gemini:
         return self._level >= 3 or self.model.lower().startswith("gemma")
 
     def _min_interval(self) -> float:
-        return 8.0 if self.model.lower().startswith("gemma") else 0.0     # ~7 pedidos/min ≈ 14K tokens/min (limite gratuito do Gemma: 16K)
+        base = self.GEMMA_GAP if self.model.lower().startswith("gemma") else self.BASE_GAP
+        return max(base, self._gap)
 
     @staticmethod
     def _extract_json(raw: str) -> str:

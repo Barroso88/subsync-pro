@@ -98,3 +98,10 @@ def wait_job(core, jid, timeout=15):
             return dict(r)
         time.sleep(0.05)
     raise AssertionError("job timeout")
+
+
+@pytest.fixture(autouse=True)
+def _no_gemini_pacing(monkeypatch):
+    """Os testes não esperam os intervalos entre pedidos ao Gemini (o teste de espaçamento usa o do Gemma)."""
+    from app.translation import Gemini
+    monkeypatch.setattr(Gemini, "BASE_GAP", 0.0)
