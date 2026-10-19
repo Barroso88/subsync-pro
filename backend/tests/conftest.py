@@ -107,3 +107,4 @@ def _no_gemini_pacing(monkeypatch):
     monkeypatch.setattr(Gemini, "BASE_GAP", 0.0)
     Gemini._SHARED.clear()           # o ritmo aprendido é partilhado entre instâncias: cada teste começa limpo
     Gemini._AUTO.clear()
+    Gemini._EXHAUSTED.clear()

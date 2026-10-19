@@ -76,6 +76,8 @@ SECRET_KEYS = {
     "subdl_api_key": "SUBDL_API_KEY",
     "deepl_api_key": "DEEPL_API_KEY",
     "gemini_api_key": "GEMINI_API_KEY",
+    "gemini_api_key_2": "GEMINI_API_KEY_2",
+    "gemini_api_key_3": "GEMINI_API_KEY_3",
     "webhook_token": "SUBSYNC_WEBHOOK_TOKEN",
     "bazarr_api_key": "BAZARR_API_KEY",
     "plex_token": "PLEX_TOKEN",

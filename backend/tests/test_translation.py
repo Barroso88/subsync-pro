@@ -502,3 +502,45 @@ def test_translation_jobs_run_one_at_a_time_in_a_queue_and_queued_can_be_cancell
                 break
             time.sleep(0.02)
     assert order == [0, 1] and peak[0] == 1                                                      # nunca duas em simultâneo; a cancelada nunca correu
+
+
+def test_gemini_switches_to_next_key_when_daily_quota_is_exhausted_and_remembers():
+    used = []
+
+    def h(req: httpx.Request):
+        key = req.headers["x-goog-api-key"]
+        used.append(key)
+        if key == "KEY_A":
+            return httpx.Response(429, json={"error": {"message": "Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})
+        body = json.loads(req.content)
+        return gem_resp([f"PT:{t}" for t in json.loads(body["contents"][0]["parts"][0]["text"])["items_to_translate"]])
+    g = Gemini("KEY_A", "gemini-test", httpx.MockTransport(h), extra_keys=["KEY_B", "KEY_C"])
+    assert g.translate(["a", "b"], "pt-PT", "en") == ["PT:a", "PT:b"]                       # a 1.ª chave esgotou: continua com a 2.ª sem falhar
+    assert used == ["KEY_A", "KEY_B"] and g.key == "KEY_B" and g.stats["key_switches"] == 1
+    assert Gemini.exhausted_until("KEY_A") and not Gemini.exhausted_until("KEY_B")
+    used.clear()
+    g2 = Gemini("KEY_A", "gemini-test", httpx.MockTransport(h), extra_keys=["KEY_B"])      # nova tradução: já nem tenta a esgotada
+    assert g2.translate(["c"], "pt-PT", "en") == ["PT:c"] and used == ["KEY_B"]
+
+
+def test_gemini_all_keys_exhausted_gives_clear_error():
+    def h(req):
+        return httpx.Response(429, json={"error": {"message": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}})
+    g = Gemini("KEY_A", "gemini-test", httpx.MockTransport(h), extra_keys=["KEY_B"])
+    with pytest.raises(DeepLError) as e:
+        g.translate(["a"], "pt-PT", "en")
+    assert e.value.quota and "todas as 2 chaves" in str(e.value) and "08:00 UTC" in str(e.value)
+
+
+def test_gemini_keys_status_via_api(cfg, fake_probe, media_root):
+    app = create_app(cfg, transport=gem_transport([]))
+    Gemini._EXHAUSTED.clear()
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"], "engine": "gemini", "gemini_model": "gemini-test"}})
+        c.put("/api/secrets", json={"values": {"gemini_api_key": "GKEY", "gemini_api_key_2": "KEY_B"}})
+        st = c.get("/api/translation").json()
+        assert st["configured"] and [k["set"] for k in st["gemini_keys"]] == [True, True, False] and "GKEY" not in json.dumps(st) and "KEY_B" not in json.dumps(st)
+        assert all(k["exhausted_until"] is None for k in st["gemini_keys"])
+        Gemini._EXHAUSTED["KEY_B"] = time.time() + 3600
+        st = c.get("/api/translation").json()
+        assert st["gemini_keys"][1]["exhausted_until"] and st["gemini_keys"][0]["exhausted_until"] is None

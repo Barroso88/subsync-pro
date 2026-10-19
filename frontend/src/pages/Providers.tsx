@@ -91,6 +91,40 @@ function ProviderCard({ p }: { p: P }) {
 
 interface Tr { enabled: boolean; configured: boolean; engine: "deepl" | "gemini"; model: string | null; deepl_configured: boolean; gemini_configured: boolean; source: string; plan: string | null; usage: { used: number; limit: number; remaining: number } | null; error: string | null }
 
+interface GKey { slot: number; name: string; set: boolean; source: string; exhausted_until: string | null }
+
+/** Até 3 chaves Gemini (por ex. de contas diferentes do próprio utilizador): usa a primeira com quota e passa à seguinte quando a diária esgota. */
+function GeminiKeys({ t, onSaved, onTest, testing }: { t?: Tr & { gemini_keys?: GKey[] }; onSaved: () => void; onTest: () => void; testing: boolean }) {
+  const toast = useToast();
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const save = useMutation({
+    mutationFn: (name: string) => api.put("/secrets", { values: { [name]: (vals[name] ?? "").trim() } }),
+    onSuccess: (_, name) => { toast("ok", "Chave guardada"); setVals((v) => ({ ...v, [name]: "" })); onSaved(); },
+    onError: (e: Error) => toast("bad", e.message),
+  });
+  const keys: GKey[] = t?.gemini_keys ?? [1, 2, 3].map((i) => ({ slot: i, name: i === 1 ? "gemini_api_key" : `gemini_api_key_${i}`, set: false, source: "none", exhausted_until: null }));
+  const shown = keys.filter((k) => k.slot === 1 || k.set || k.slot === (keys.filter((x) => x.set).length + 1));
+  return (
+    <div className="space-y-3">
+      <div className="label">Chaves Gemini (aistudio.google.com/apikey)</div>
+      {shown.map((k) => (
+        <div key={k.name} className="space-y-1">
+          <div className="flex gap-2"><div className="relative flex-1"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
+            <input className="input pl-9" type="password" autoComplete="off" disabled={k.source === "env"} value={vals[k.name] ?? ""} onChange={(e) => setVals((v) => ({ ...v, [k.name]: e.target.value }))}
+              placeholder={k.set ? "•••••••• (vazio = manter)" : k.slot === 1 ? "Chave principal" : `Chave ${k.slot} (opcional, outra conta)`} /></div>
+            <button className="btn-primary" disabled={!(vals[k.name] ?? "").trim() || save.isPending} onClick={() => save.mutate(k.name)}>Guardar</button>
+            {k.slot === 1 && <button className="btn-ghost" disabled={testing || !t?.configured} onClick={onTest}>{testing && <Loader2 size={14} className="animate-spin" />}Testar</button>}</div>
+          <div className="flex gap-2 items-center text-xs text-mute flex-wrap">
+            <span>Chave {k.slot}: {k.set ? `definida (${k.source === "env" ? "variável de ambiente" : "guardada"})` : "sem chave"}</span>
+            {k.exhausted_until && <Badge tone="warn">quota diária esgotada até {new Date(k.exhausted_until).toLocaleString("pt-PT", { hour: "2-digit", minute: "2-digit" })}</Badge>}
+          </div>
+        </div>
+      ))}
+      <div className="text-xs text-dim">Com mais de uma chave, a app usa a primeira e só passa à seguinte quando o limite <b>diário</b> da anterior esgota (a tradução continua sem falhar). Cada chave tem a sua quota (por projeto/conta). Use apenas chaves das suas próprias contas e confirme os termos do Google.</div>
+    </div>
+  );
+}
+
 function TranslationCard() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -147,12 +181,14 @@ function TranslationCard() {
               {modelList.length === 0 && <span className="text-xs text-dim">Nenhum modelo devolvido.</span>}</div>}
           </Field>
         )}
-        <Field label={gem ? "API key do Gemini" : "API key do DeepL"} hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}).${gem ? "" : " Chaves gratuitas terminam em :fx."}` : gem ? "Crie uma chave em aistudio.google.com/apikey." : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>
-          <div className="flex gap-2"><div className="relative flex-1"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
-            <input className="input pl-9" type="password" autoComplete="off" disabled={t?.source === "env"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={t?.configured ? "•••••••• (vazio = manter)" : ""} /></div>
-            <button className="btn-primary" disabled={!key.trim() || save.isPending} onClick={() => save.mutate()}>Guardar</button>
-            <button className="btn-ghost" disabled={q.isFetching || test.isPending || !t?.configured} onClick={() => { setTestMsg(null); if (gem) test.mutate(); else q.refetch(); }}>{(q.isFetching || test.isPending) && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
-        </Field>
+        {gem ? <GeminiKeys t={t} onSaved={() => qc.invalidateQueries({ queryKey: ["translation"] })} onTest={() => { setTestMsg(null); test.mutate(); }} testing={test.isPending} /> : (
+          <Field label={gem ? "API key do Gemini" : "API key do DeepL"} hint={t?.configured ? `Definida (${t.source === "env" ? "variável de ambiente" : "guardada"}).${gem ? "" : " Chaves gratuitas terminam em :fx."}` : gem ? "Crie uma chave em aistudio.google.com/apikey." : "Crie uma chave em deepl.com/pro-api (plano API Free)."}>
+            <div className="flex gap-2"><div className="relative flex-1"><KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
+              <input className="input pl-9" type="password" autoComplete="off" disabled={t?.source === "env"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={t?.configured ? "•••••••• (vazio = manter)" : ""} /></div>
+              <button className="btn-primary" disabled={!key.trim() || save.isPending} onClick={() => save.mutate()}>Guardar</button>
+              <button className="btn-ghost" disabled={q.isFetching || test.isPending || !t?.configured} onClick={() => { setTestMsg(null); if (gem) test.mutate(); else q.refetch(); }}>{(q.isFetching || test.isPending) && <Loader2 size={14} className="animate-spin" />}Testar</button></div>
+          </Field>
+        )}
       </div>
       {testMsg && <div className={`mt-3 text-sm flex gap-2 ${testMsg.ok ? "text-ok" : "text-bad"}`}>{testMsg.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <XCircle size={16} className="mt-0.5 shrink-0" />}<div>{testMsg.text}
         {testMsg.pairs && <div className="mt-2 space-y-1 text-xs text-fg">{testMsg.pairs.map((p, i) => <div key={i}><span className="text-mute">{p.src}</span> → <b>{p.out}</b></div>)}</div>}</div></div>}

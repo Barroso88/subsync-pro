@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Callable
 
@@ -132,7 +133,29 @@ class Gemini:
     _AUTO: dict[str, tuple[float, str]] = {}
     _SHARED: dict[str, dict] = {}        # por chave: instante do último pedido e espaçamento aprendido (partilhados entre traduções consecutivas)     # chave -> (quando, modelo escolhido automaticamente)
 
-    def __init__(self, key: str, model: str = "", transport: httpx.BaseTransport | None = None):
+    _EXHAUSTED: dict[str, float] = {}     # chave -> instante (epoch) até ao qual a quota diária está esgotada (reposição à meia-noite do Pacífico ≈ 08:00 UTC)
+
+    @staticmethod
+    def _next_reset() -> float:
+        now = datetime.now(timezone.utc)
+        reset = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if reset <= now:
+            reset += timedelta(days=1)
+        return reset.timestamp()
+
+    @classmethod
+    def exhausted_until(cls, key: str) -> float | None:
+        t = cls._EXHAUSTED.get(key)
+        if t and t > time.time():
+            return t
+        cls._EXHAUSTED.pop(key, None)
+        return None
+
+    def __init__(self, key: str, model: str = "", transport: httpx.BaseTransport | None = None, extra_keys: list[str] | None = None):
+        # vários chaves (por ex. de contas diferentes do próprio utilizador): usa a primeira com quota; passa à seguinte quando a diária esgota
+        self.keys = [k for k in dict.fromkeys([key, *(extra_keys or [])]) if k]
+        live = [k for k in self.keys if not Gemini.exhausted_until(k)]
+        key = (live or self.keys or [key])[0]
         self.key, self.transport = key, transport
         self.model = re.sub(r"[^A-Za-z0-9._-]", "", model or "")      # vazio = automático (o Flash mais recente que a chave pode usar)
         self.base = "https://generativelanguage.googleapis.com/v1beta"
@@ -148,7 +171,10 @@ class Gemini:
 
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=httpx.Timeout(self.timeout, connect=15.0), follow_redirects=False, transport=self.transport,
-                            headers={"x-goog-api-key": self.key, "User-Agent": "SubSyncPro/1.0", "content-type": "application/json"})
+                            headers={"User-Agent": "SubSyncPro/1.0", "content-type": "application/json"})
+
+    def _hdr(self) -> dict:
+        return {"x-goog-api-key": self.key}
 
     def usage(self) -> Usage:            # o Google não expõe consumo: a quota vê-se no AI Studio
         return Usage(0, 0)
@@ -158,7 +184,7 @@ class Gemini:
         own = c is None
         c = c or self._client()
         try:
-            r = c.get(f"{self.base}/models", params={"pageSize": 200})
+            r = c.get(f"{self.base}/models", params={"pageSize": 200}, headers=self._hdr())
         except httpx.HTTPError as e:
             raise DeepLError(f"Sem ligação ao Gemini: {type(e).__name__}") from e
         finally:
@@ -231,7 +257,7 @@ class Gemini:
             self._time_check()
             self._sh["last"] = t0 = time.monotonic()
             try:
-                r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body)
+                r = c.post(f"{self.base}/models/{self.model}:generateContent", json=body, headers=self._hdr())
                 self.stats["requests"] += 1
                 self.stats["slowest"] = max(self.stats["slowest"], time.monotonic() - t0)
             except httpx.TimeoutException:
@@ -250,6 +276,16 @@ class Gemini:
                 self.stats["rate_limited"] += 1
                 kind, delay = self._rate_info(r)
                 if kind == "day":
+                    Gemini._EXHAUSTED[self.key] = Gemini._next_reset()
+                    nxt = next((k for k in self.keys if k != self.key and not Gemini.exhausted_until(k)), None)
+                    if nxt:                                  # há outra chave com quota: continua com ela (o pedido repete-se)
+                        self.key = nxt
+                        self._sh = Gemini._SHARED.setdefault(nxt, {"last": 0.0, "gap": 0.0})
+                        self.stats["key_switches"] = self.stats.get("key_switches", 0) + 1
+                        continue
+                    if len(self.keys) > 1:
+                        raise DeepLError(f"O limite diário de pedidos do Gemini esgotou em todas as {len(self.keys)} chaves (modelo «{self.model}»). "
+                                         "A quota repõe-se por volta das 08:00 UTC (meia-noite no Pacífico). Pode escolher outro modelo ou ativar o faturamento.", quota=True)
                     raise DeepLError(f"Limite diário de pedidos do Gemini esgotado para o modelo «{self.model}» (escalão gratuito). Tente amanhã, ative o faturamento "
                                      "ou escolha um modelo com limite diário maior (ex.: um «flash-lite»; veja Fornecedores → Listar modelos).", quota=True)
                 self._sh["gap"] = min(max(self._sh["gap"] * 2, 8.0), 15.0)      # limite por minuto: abranda o ritmo dos pedidos seguintes (5/min → 12 s)

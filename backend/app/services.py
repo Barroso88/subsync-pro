@@ -7,7 +7,7 @@ import shutil
 import threading
 from dataclasses import replace
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -625,8 +625,15 @@ class App:
         e = self.settings.get("translation").get("engine")
         return e if e in ("deepl", "gemini") else "deepl"
 
+    GEMINI_SLOTS = ("gemini_api_key", "gemini_api_key_2", "gemini_api_key_3")
+
+    def _gemini_keys(self) -> list[str]:
+        return [k for k in (self.secrets.get(n) for n in self.GEMINI_SLOTS) if k]
+
     def _engine_key(self) -> str:
-        return self.secrets.get("gemini_api_key" if self._engine_name() == "gemini" else "deepl_api_key")
+        if self._engine_name() == "gemini":
+            return (self._gemini_keys() or [""])[0]
+        return self.secrets.get("deepl_api_key")
 
     def _deepl(self) -> "DeepL | Gemini":
         """Motor de tradução escolhido em Definições (o nome do método é histórico)."""
@@ -634,7 +641,8 @@ class App:
         if not key:
             raise ServiceError(f"API key do {'Gemini' if name == 'gemini' else 'DeepL'} não configurada (Fornecedores → Tradução).", 400)
         if name == "gemini":
-            return Gemini(key, self.settings.get("translation").get("gemini_model") or "", self.transport)
+            ks = self._gemini_keys()
+            return Gemini(ks[0], self.settings.get("translation").get("gemini_model") or "", self.transport, extra_keys=ks[1:])
         return DeepL(key, self.transport)
 
     def _targets(self) -> list[str]:
@@ -656,7 +664,7 @@ class App:
                 "pairs": [{"src": a, "out": b} for a, b in zip(src, out)]}
 
     def gemini_models(self) -> dict:
-        key = self.secrets.get("gemini_api_key")
+        key = (self._gemini_keys() or [""])[0]
         if not key:
             raise ServiceError("API key do Gemini não configurada.", 400)
         try:
@@ -669,9 +677,13 @@ class App:
         cfg = self.settings.get("translation")
         eng = self._engine_name()
         kname = "gemini_api_key" if eng == "gemini" else "deepl_api_key"
-        st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self.secrets.get(kname)), "engine": eng,
+        st = {"enabled": bool(cfg["enabled"]), "auto_fallback": bool(cfg["auto_fallback"]), "configured": bool(self._engine_key()), "engine": eng,
               "model": (cfg.get("gemini_model") or "automático") if eng == "gemini" else None, "deepl_configured": bool(self.secrets.get("deepl_api_key")),
-              "gemini_configured": bool(self.secrets.get("gemini_api_key")),
+              "gemini_configured": bool(self._gemini_keys()),
+              "gemini_keys": [{"slot": i + 1, "name": n, "set": bool(self.secrets.get(n)), "source": self.secrets.source(n),
+                               "exhausted_until": (datetime.fromtimestamp(Gemini.exhausted_until(self.secrets.get(n)), timezone.utc).isoformat()
+                                                   if self.secrets.get(n) and Gemini.exhausted_until(self.secrets.get(n)) else None)}
+                              for i, n in enumerate(self.GEMINI_SLOTS)],
               "source": self.secrets.source(kname), "targets": self._targets(), "usage": None, "error": None, "plan": None}
         if st["configured"] and eng == "deepl":
             st["plan"] = "free" if self.secrets.get("deepl_api_key").endswith(":fx") else "pro"
