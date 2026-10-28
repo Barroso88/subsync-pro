@@ -36,14 +36,16 @@ class Plex:
     def sections(self) -> list[dict]:
         return self._req("GET", "/library/sections").json()["MediaContainer"].get("Directory", [])
 
-    def items(self) -> list[dict]:
-        """Filmes e episódios com caminho, ratingKey e poster."""
+    def items(self, recent: int | None = None) -> list[dict]:
+        """Filmes e episódios com caminho, ratingKey e poster. `recent=N`: só os N adicionados mais recentemente a cada secção (barato)."""
         out = []
         for sec in self.sections():
             t = sec.get("type")
             if t not in ("movie", "show"):
                 continue
-            params = {"type": 1} if t == "movie" else {"type": 4}
+            params: dict = {"type": 1} if t == "movie" else {"type": 4}
+            if recent:
+                params.update({"sort": "addedAt:desc", "X-Plex-Container-Start": 0, "X-Plex-Container-Size": int(recent)})
             for m in self._req("GET", f"/library/sections/{sec['key']}/all", **params).json()["MediaContainer"].get("Metadata", []):
                 for media in m.get("Media", []):
                     for part in media.get("Part", []):

@@ -200,29 +200,30 @@ class App:
         except IntegrationError as e:
             return {"ok": False, "message": str(e)}
 
+
+    def _set_poster(self, mid: int, new: str | None, source: str) -> None:
+        """Capa do Plex tem prioridade; as restantes ficam como alternativa. Muda a ordem => limpa a cache."""
+        if not new:
+            return
+        cur = self.db.one("SELECT poster FROM media_items WHERE id=?", (mid,))
+        old = (cur["poster"] or "") if cur else ""
+        plex_ref = next((r for r in old.split("|") if r.startswith("plex:")), None)
+        if source == "plex":
+            rest = [r for r in old.split("|") if r and not r.startswith("plex:")]
+            final = "|".join([new] + rest)
+        else:
+            final = "|".join(([plex_ref] if plex_ref else []) + [r for r in new.split("|") if r])
+        if final != old:
+            self.db.execute("UPDATE media_items SET poster=? WHERE id=?", (final, mid))
+            for suffix in (".img", ".type", ".src"):
+                try:
+                    (self.cfg.poster_dir / f"{mid}{suffix}").unlink()
+                except OSError:
+                    pass
+
     def _sync_integrations(self, ctx: JobContext | None = None) -> dict:
         res = {"updated": 0}
         lookup = {r["path"]: r["id"] for r in self.db.query("SELECT id,path FROM media_items WHERE present=1")}
-
-        def set_poster(mid: int, new: str | None, source: str) -> None:
-            """Capa do Plex tem prioridade; as restantes ficam como alternativa. Muda a ordem => limpa a cache."""
-            if not new:
-                return
-            cur = self.db.one("SELECT poster FROM media_items WHERE id=?", (mid,))
-            old = (cur["poster"] or "") if cur else ""
-            plex_ref = next((r for r in old.split("|") if r.startswith("plex:")), None)
-            if source == "plex":
-                rest = [r for r in old.split("|") if r and not r.startswith("plex:")]
-                final = "|".join([new] + rest)
-            else:
-                final = "|".join(([plex_ref] if plex_ref else []) + [r for r in new.split("|") if r])
-            if final != old:
-                self.db.execute("UPDATE media_items SET poster=? WHERE id=?", (final, mid))
-                for suffix in (".img", ".type", ".src"):
-                    try:
-                        (self.cfg.poster_dir / f"{mid}{suffix}").unlink()
-                    except OSError:
-                        pass
 
         def upd(path, **cols):
             mid = lookup.get(path)
@@ -246,24 +247,74 @@ class App:
                     for m in svc.movies():
                         upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"), added_at=m.get("added"))
                         if lookup.get(m["path"]):
-                            set_poster(lookup[m["path"]], m["poster"], "arr")
+                            self._set_poster(lookup[m["path"]], m["poster"], "arr")
                 elif name == "sonarr":
                     for e in svc.episodes():
                         upd(e["path"], imdb_id=e["imdb_id"], tmdb_id=e["tmdb_id"], tvdb_id=e["tvdb_id"], episode_title=e["episode_title"], added_at=e.get("added"))
                         if lookup.get(e["path"]):
-                            set_poster(lookup[e["path"]], e["poster"], "arr")
+                            self._set_poster(lookup[e["path"]], e["poster"], "arr")
                 else:
                     for it in svc.items():
                         mid = lookup.get(it["path"])
                         if mid:
                             upd(it["path"], plex_key=it["rating_key"], added_at=it.get("added"))
-                            set_poster(mid, it["poster"], "plex")
+                            self._set_poster(mid, it["poster"], "plex")
             except IntegrationError as e:
                 errors.append(f"{name}: {e}")
         if errors:
             raise IntegrationError("; ".join(errors))
         add_event(self.db, "integration", f"Metadados sincronizados ({res['updated']} atualizações).")
         return res
+
+    def sync_new_item(self, media_id: int) -> dict:
+        """Metadados e capa de UM item (um ficheiro acabado de entrar), sem a análise completa: Radarr/Sonarr por id e Plex pelos adicionados
+        mais recentemente. Nunca falha: erros ficam no registo."""
+        m = self.db.one("SELECT * FROM media_items WHERE id=?", (media_id,))
+        res = {"radarr": False, "sonarr": False, "plex": False}
+        if not m:
+            return res
+        for name in ("radarr", "sonarr", "plex"):
+            svc = self._integration(name)
+            if svc is None:
+                continue
+            try:
+                if name == "radarr" and m["kind"] == "movie" and m["tmdb_id"]:
+                    r = svc.movie_by_tmdb(m["tmdb_id"])
+                    if r:
+                        self.db.execute("UPDATE media_items SET radarr_id=?, radarr_title=?, year=COALESCE(?,year), imdb_id=COALESCE(?,imdb_id), added_at=COALESCE(?,added_at) WHERE id=?",
+                                        (r["id"], r["title"], r["year"], r["imdb_id"], r["added"], media_id))
+                        self._set_poster(media_id, r["poster"], "arr")
+                        res["radarr"] = True
+                elif name == "sonarr" and m["kind"] == "episode" and m["tvdb_id"]:
+                    self._set_poster(media_id, svc.series_poster(m["tvdb_id"]), "arr")
+                    res["sonarr"] = True
+                elif name == "plex":
+                    for it in svc.items(recent=80):
+                        if it["path"] == m["path"]:
+                            self.db.execute("UPDATE media_items SET plex_key=?, added_at=COALESCE(?,added_at) WHERE id=?", (it["rating_key"], it.get("added"), media_id))
+                            self._set_poster(media_id, it["poster"], "plex")
+                            res["plex"] = True
+                            break
+            except IntegrationError as e:
+                add_event(self.db, "integration", f"Metadados de «{m['title']}» ({name}): {e}", "warning", media_id)
+        return res
+
+    def _later_sync(self, media_id: int, delays: tuple[int, ...] = (120, 600)) -> None:
+        """O Plex só conhece o ficheiro depois de o analisar: repete a sincronização do item mais tarde (a capa do Plex tem prioridade)."""
+        def run(i: int) -> None:
+            try:
+                row = self.db.one("SELECT poster FROM media_items WHERE id=? AND present=1", (media_id,))
+                if row is None or "plex:" in (row["poster"] or ""):
+                    return
+                if not self.sync_new_item(media_id)["plex"] and i + 1 < len(delays):
+                    t = threading.Timer(delays[i + 1] - delays[i], run, (i + 1,))
+                    t.daemon = True
+                    t.start()
+            except Exception as e:  # noqa: BLE001
+                log.warning("sincronização tardia do item %s: %s", media_id, scrub(str(e)))
+        t = threading.Timer(delays[0], run, (0,))
+        t.daemon = True
+        t.start()
 
     def _job_sync(self, ctx: JobContext, p: dict) -> dict:
         return self._sync_integrations(ctx)
@@ -1074,8 +1125,11 @@ class App:
         if cols:
             self.db.execute(f"UPDATE media_items SET {','.join(f'{k}=?' for k in cols)} WHERE id=?", (*cols.values(), m["id"]))
         add_event(self.db, "webhook", f"{p['source'].title()}: novo ficheiro {os.path.basename(real)}", "info", m["id"])
+        synced = self.sync_new_item(m["id"])                       # capa, título do Radarr, ids… sem esperar pela análise completa
+        if self.settings.get("plex")["enabled"] and not synced["plex"]:
+            self._later_sync(m["id"])
         s = self.settings.all()
-        res: dict = {"media_id": m["id"], "searched": False}
+        res: dict = {"media_id": m["id"], "searched": False, "synced": synced}
         if s["auto_download"] and any(x.get("enabled") for x in s["providers"].values()):
             res["batch"] = self._job_batch(ctx, {"media_ids": [m["id"]], "install": not s["require_confirmation"], "min_tier": s["auto_min_tier"], "auto": True})
             res["searched"] = True

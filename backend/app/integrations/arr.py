@@ -47,17 +47,30 @@ class Arr:
                 return "|".join(parts) or None
         return None
 
+    def _movie_row(self, m: dict) -> dict | None:
+        mf = m.get("movieFile") or {}
+        path = mf.get("path")
+        if not path:
+            return None
+        return {"id": m.get("id"), "path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
+                "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images")),
+                "added": mf.get("dateAdded") or m.get("added")}
+
     def movies(self) -> list[dict]:
-        out = []
-        for m in self._get("/movie"):
-            mf = m.get("movieFile") or {}
-            path = mf.get("path")
-            if not path:
-                continue
-            out.append({"id": m.get("id"), "path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
-                        "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images")),
-                        "added": mf.get("dateAdded") or m.get("added")})
-        return out
+        return [r for r in (self._movie_row(m) for m in self._get("/movie")) if r]
+
+    def movie_by_tmdb(self, tmdb_id: int) -> dict | None:
+        """Um só filme (para um ficheiro acabado de entrar): evita descarregar a lista inteira."""
+        for m in self._get("/movie", tmdbId=tmdb_id) or []:
+            r = self._movie_row(m)
+            if r:
+                return r
+        return None
+
+    def series_poster(self, tvdb_id: int) -> str | None:
+        for s in self._get("/series", tvdbId=tvdb_id) or []:
+            return self._poster(s.get("images"))
+        return None
 
     def episodes(self) -> list[dict]:
         out = []
