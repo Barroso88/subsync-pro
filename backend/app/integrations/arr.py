@@ -54,7 +54,18 @@ class Arr:
             return None
         return {"id": m.get("id"), "path": map_remote_to_local(path, self.mappings), "title": m.get("title"), "year": m.get("year"),
                 "imdb_id": m.get("imdbId"), "tmdb_id": m.get("tmdbId"), "poster": self._poster(m.get("images")),
-                "added": mf.get("dateAdded") or m.get("added")}
+                "added": mf.get("dateAdded") or m.get("added"), **self._imdb_rating(m)}
+
+    @staticmethod
+    def _imdb_rating(m: dict) -> dict:
+        """Nota IMDb que o Radarr já traz no filme (`ratings.imdb.value/votes`); sem ela não se mostra nada."""
+        r = ((m.get("ratings") or {}).get("imdb")) or {}
+        try:
+            v = float(r.get("value"))
+        except (TypeError, ValueError):
+            return {"imdb_rating": None, "imdb_votes": None}
+        votes = r.get("votes")
+        return {"imdb_rating": v if 0 < v <= 10 else None, "imdb_votes": int(votes) if isinstance(votes, (int, float)) else None}
 
     def movies(self) -> list[dict]:
         return [r for r in (self._movie_row(m) for m in self._get("/movie")) if r]

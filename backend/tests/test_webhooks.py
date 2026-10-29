@@ -160,3 +160,36 @@ def test_sync_new_item_takes_plex_poster_with_priority_and_asks_only_for_recent(
         m = core.db.one("SELECT * FROM media_items WHERE id=?", (mid,))
         assert res["plex"] is True and m["plex_key"] == "99" and m["poster"].startswith("plex:/library/metadata/99/thumb/1|https://image.tmdb.org")   # Plex à frente, TMDb como alternativa
         assert any(p == "/library/sections/1/all" and q.get("sort") == "addedAt:desc" and q.get("X-Plex-Container-Size") == "80" for p, q in seen)   # só os mais recentes
+
+
+def test_imdb_rating_from_radarr_is_stored_shown_and_sortable(cfg, fake_probe, media_root):
+    import httpx
+    state = {"blob": make_zip({"x.srt": make_srt(120, 30_000, lang="pt-PT").encode()})}
+    base = provider_transport(state)
+
+    def movie(n, path, rating):
+        m = {"id": n, "title": f"Filme {n}", "year": 2025, "imdbId": f"tt{n}", "tmdbId": n, "movieFile": {"path": path}, "images": []}
+        if rating is not None:
+            m["ratings"] = {"imdb": {"votes": 1234, "value": rating}, "tmdb": {"votes": 5, "value": 9.9}}      # a nota TMDb nunca se confunde com a do IMDb
+        return m
+
+    def h(req: httpx.Request):
+        if req.url.host == "192.168.1.10" and req.url.path == "/api/v3/movie":
+            return httpx.Response(200, json=[movie(1, "/filmes/Novo Filme (2025)/Novo Filme (2025).mkv", 7.4), movie(2, "/filmes/Sem Nota (2024)/Sem Nota (2024).mkv", None)])
+        return base.handle_request(req)
+    app = create_app(cfg, transport=httpx.MockTransport(h))
+    with TestClient(app) as c:
+        c.core, c.root = app.state.core, media_root
+        c.post("/api/libraries", json={"name": "Filmes", "type": "movies", "path": str(media_root / "Filmes"), "writable": True})
+        d2 = media_root / "Filmes" / "Sem Nota (2024)"
+        d2.mkdir()
+        (d2 / "Sem Nota (2024).mkv").write_bytes(b"\6" * 200_000)
+        new_movie(c)
+        c.put("/api/settings", json={"radarr": {"enabled": True, "url": "http://192.168.1.10:7878", "path_mappings": [{"remote": "/filmes", "local": str(media_root / "Filmes")}]}})
+        c.put("/api/secrets", json={"values": {"radarr_api_key": "RK"}})
+        wait(c, c.post("/api/scan", json={}).json()["job_id"])
+        items = {i["file_name"]: i for i in c.get("/api/media", params={"kind": "movie", "sort": "rating"}).json()["items"]}
+        assert items["Novo Filme (2025).mkv"]["imdb_rating"] == 7.4 and items["Novo Filme (2025).mkv"]["imdb_votes"] == 1234
+        assert items["Sem Nota (2024).mkv"]["imdb_rating"] is None                                                  # sem nota: não se inventa
+        order = [i["file_name"] for i in c.get("/api/media", params={"kind": "movie", "sort": "rating"}).json()["items"]]
+        assert order.index("Novo Filme (2025).mkv") < order.index("Sem Nota (2024).mkv")                           # com nota primeiro (melhor avaliados)

@@ -264,7 +264,7 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         c = c or {}
         d = {k: m[k] for k in ("id", "kind", "title", "year", "series_title", "season", "episode", "episode_title",
                                "file_name", "path", "duration", "width", "height", "video_codec", "fps", "plex_key",
-                               "library_id", "imdb_id", "tmdb_id", "radarr_id", "radarr_title") if k in m}
+                               "library_id", "imdb_id", "tmdb_id", "radarr_id", "radarr_title", "imdb_rating", "imdb_votes") if k in m}
         limit = datetime.now(timezone.utc).timestamp() + 86400
         added = m.get("added_at")
         if added:
@@ -308,7 +308,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                          "EXISTS(SELECT 1 FROM subtitles s WHERE s.media_id=m.id AND s.present=1 AND (lower(coalesce(s.lang,'')) LIKE ? OR lower(s.path) LIKE ?)))")
             args += [like, like, like, like, q.strip(), like, like, like]
         order = {"title": "lower(coalesce(m.series_title, nullif(m.radarr_title,''), m.title)), m.season, m.episode, lower(coalesce(nullif(m.radarr_title,''), m.title))", "year": "m.year DESC, lower(m.title)",
-                 "added": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "recent": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "added_old": f"({_ADDED}) IS NULL, {_ADDED} ASC, m.id ASC"}.get(sort, "lower(m.title)")
+                 "added": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "recent": f"({_ADDED}) IS NULL, {_ADDED} DESC, m.id DESC", "added_old": f"({_ADDED}) IS NULL, {_ADDED} ASC, m.id ASC",
+                 "rating": "m.imdb_rating IS NULL, m.imdb_rating DESC, coalesce(m.imdb_votes,0) DESC, lower(m.title)"}.get(sort, "lower(m.title)")
         rows_ = core.db.query(f"SELECT m.* FROM media_items m WHERE {' AND '.join(where)} ORDER BY {order}", args)
         covs = cov.compute(core.db, core.settings)  # derivado dos dados reais
         out = []

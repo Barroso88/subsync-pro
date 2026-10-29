@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, S
 import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
 import { useLangFilter, useMeta } from "../hooks";
+import { RatingBadge } from "./MediaBrowser";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
 import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "./subs";
 import { EditHistory, SubToolsModal } from "./SubTools";
@@ -42,6 +43,7 @@ export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | 
                 {d.video_codec && <Badge>{d.video_codec.toUpperCase()}</Badge>}
                 {d.height && <Badge>{resolution(d.height, d.width)}</Badge>}
                 {d.fps && <Badge>{d.fps} fps</Badge>}
+                {d.imdb_rating ? <RatingBadge rating={d.imdb_rating} votes={d.imdb_votes} className="!h-6 !text-xs" /> : null}
                 <Badge>{fmtDur(d.duration)}</Badge>
                 <Badge>{fmtSize(d.size).replace(" MB", " MB")}</Badge>
               </div>

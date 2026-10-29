@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Film, LayoutGrid, List, Loader2, Search, SearchCheck, Tv, X, AlertTriangle, Clapperboard } from "lucide-react";
+import { ChevronLeft, ChevronRight, Film, LayoutGrid, List, Loader2, Search, SearchCheck, Tv, X, AlertTriangle, Clapperboard, Star } from "lucide-react";
 import { api, Item, qs } from "../api";
 import { cx, epCode, fmtDur } from "../lib";
 import { useMeta, useSettings, useStartJob } from "../hooks";
@@ -29,12 +29,24 @@ const STATUS = [
   { id: "unverified", label: "Por verificar" }, { id: "suspect", label: "Possível dessincronização" },
 ] as const;
 
-export function Poster({ item, className }: { item: Item; className?: string }) {
+/** Nota IMDb (vinda do Radarr) em etiqueta; não mostra nada se o filme não tiver nota. */
+export function RatingBadge({ rating, votes, className }: { rating?: number | null; votes?: number | null; className?: string }) {
+  if (!rating) return null;
+  return (
+    <span className={cx("inline-flex items-center gap-1 rounded-md bg-black/75 backdrop-blur px-1.5 h-5 text-[11px] font-semibold text-white tabular-nums", className)}
+      title={`Nota IMDb ${rating.toFixed(1)}/10${votes ? ` · ${votes.toLocaleString("pt-PT")} votos` : ""}`}>
+      <Star size={10} className="text-[#f5c518] fill-[#f5c518]" />{rating.toFixed(1)}
+    </span>
+  );
+}
+
+export function Poster({ item, className, showRating = false }: { item: Item; className?: string; showRating?: boolean }) {
   const [err, setErr] = useState(false);
   return (
-    <div className={cx("bg-s2 overflow-hidden grid place-items-center text-dim", className)}>
+    <div className={cx("relative bg-s2 overflow-hidden grid place-items-center text-dim", className)}>
       {item.has_poster && !err ? <img src={`/api/media/${item.id}/poster`} alt="" loading="lazy" onError={() => setErr(true)} className="w-full h-full object-cover" />
         : item.kind === "movie" ? <Film size={22} /> : <Tv size={22} />}
+      {showRating && <RatingBadge rating={item.imdb_rating} votes={item.imdb_votes} className="absolute bottom-2 right-2" />}
     </div>
   );
 }
@@ -84,7 +96,7 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
         {!missingMode && <Tabs value={status} onChange={setStatus} items={STATUS.map((s) => ({ id: s.id, label: s.label }))} />}
         <div className="ml-auto flex items-center gap-2">
           <select className="input !w-auto" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Ordenar por">
-            <option value="title">Ordem alfabética</option><option value="added">Adicionados recentemente</option><option value="added_old">Adicionados há mais tempo</option><option value="year">Ano (mais recente)</option>
+            <option value="title">Ordem alfabética</option><option value="added">Adicionados recentemente</option><option value="added_old">Adicionados há mais tempo</option><option value="year">Ano (mais recente)</option><option value="rating">Melhor avaliados (IMDb)</option>
           </select>
           <span className="text-xs text-dim tabular-nums">{total} {total === 1 ? "item" : "itens"}</span>
           {allowGrid && (
@@ -129,7 +141,7 @@ export function MediaBrowser({ kind, defaultStatus = "", allowGrid = false, miss
           {items.map((i) => (
             <div key={i.id} className={cx("group relative text-left animate-rise", sel.has(i.id) && "ring-2 ring-accent rounded-xl")}>
               <button className="block w-full text-left" onClick={() => setOpen(i.id)}>
-                <Poster item={i} className="aspect-[2/3] rounded-xl border border-line group-hover:border-mute/50 transition-colors" />
+                <Poster item={i} showRating className="aspect-[2/3] rounded-xl border border-line group-hover:border-mute/50 transition-colors" />
                 <div className="mt-2 text-[13px] font-medium truncate">{i.title}</div>
                 <div className="text-xs text-dim mb-1.5">{i.year ?? "—"}</div>
                 <LangChips item={i} />

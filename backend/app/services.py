@@ -245,7 +245,8 @@ class App:
             try:
                 if name == "radarr":
                     for m in svc.movies():
-                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"), added_at=m.get("added"))
+                        upd(m["path"], imdb_id=m["imdb_id"], tmdb_id=m["tmdb_id"], year=m["year"], radarr_id=m.get("id"), radarr_title=m.get("title"), added_at=m.get("added"),
+                            imdb_rating=m.get("imdb_rating"), imdb_votes=m.get("imdb_votes"))
                         if lookup.get(m["path"]):
                             self._set_poster(lookup[m["path"]], m["poster"], "arr")
                 elif name == "sonarr":
@@ -281,8 +282,9 @@ class App:
                 if name == "radarr" and m["kind"] == "movie" and m["tmdb_id"]:
                     r = svc.movie_by_tmdb(m["tmdb_id"])
                     if r:
-                        self.db.execute("UPDATE media_items SET radarr_id=?, radarr_title=?, year=COALESCE(?,year), imdb_id=COALESCE(?,imdb_id), added_at=COALESCE(?,added_at) WHERE id=?",
-                                        (r["id"], r["title"], r["year"], r["imdb_id"], r["added"], media_id))
+                        self.db.execute("UPDATE media_items SET radarr_id=?, radarr_title=?, year=COALESCE(?,year), imdb_id=COALESCE(?,imdb_id), added_at=COALESCE(?,added_at), "
+                                        "imdb_rating=COALESCE(?,imdb_rating), imdb_votes=COALESCE(?,imdb_votes) WHERE id=?",
+                                        (r["id"], r["title"], r["year"], r["imdb_id"], r["added"], r.get("imdb_rating"), r.get("imdb_votes"), media_id))
                         self._set_poster(media_id, r["poster"], "arr")
                         res["radarr"] = True
                 elif name == "sonarr" and m["kind"] == "episode" and m["tvdb_id"]:
