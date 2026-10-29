@@ -164,6 +164,7 @@ function UploadSubtitle({ d }: { d: Detail }) {
             <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={forced} onChange={(e) => setForced(e.target.checked)} />Forçada (só partes estrangeiras)</label>
             <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={hi} onChange={(e) => setHi(e.target.checked)} />Para surdos (SDH/HI)</label>
           </div>
+          {send.isPending && <div className="card bg-s2 p-3 text-xs text-mute flex gap-2"><Loader2 size={14} className="animate-spin shrink-0 text-accent" />A validar e a comparar os tempos. Se o filme só tiver uma faixa embutida como referência, a app tem de a extrair do vídeo (ffmpeg): em ficheiros grandes na rede pode demorar até alguns minutos. O resto da app continua a funcionar.</div>}
           <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
             <div>• O ficheiro é validado (SRT, ASS, SSA, VTT ou um .zip com uma legenda) e <b>não é gravado na biblioteca</b> até confirmar.</div>
             <div>• Se existir outra legenda do filme, compara os tempos e diz se coincidem; se já existir uma no mesmo idioma, <b>nunca é substituída em silêncio</b>.</div>

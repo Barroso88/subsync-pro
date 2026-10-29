@@ -47,3 +47,26 @@ def test_upload_new_language_installs_with_backup_free_path(setup):
     assert not d["conflict"] and d["dest_path"].endswith("Filme Teste (2024).pt-BR.srt")
     inst = setup.post(f"/api/downloads/{d['id']}/install", json={"policy": "fail"})
     assert inst.status_code == 200 and (setup.dir / "Filme Teste (2024).pt-BR.srt").exists()
+
+
+def test_slow_upload_does_not_block_the_rest_of_the_app(setup, monkeypatch):
+    import threading
+    import time
+    mid = _media(setup)
+    started = threading.Event()
+    orig = setup.core.upload_subtitle
+
+    def slow(*a, **k):
+        started.set()
+        time.sleep(1.5)                                   # como a extração de uma faixa embutida num ficheiro grande
+        return orig(*a, **k)
+    monkeypatch.setattr(setup.core, "upload_subtitle", slow)
+    res = {}
+    t = threading.Thread(target=lambda: res.update(r=setup.post(f"/api/media/{mid}/upload", params={"filename": "a.srt", "lang": "pt-PT"}, content=make_srt(60, 30_000, lang="pt-PT").encode())))
+    t.start()
+    assert started.wait(3)
+    t0 = time.monotonic()
+    assert setup.get("/api/health").status_code == 200 and setup.get("/api/sidebar").status_code == 200
+    assert time.monotonic() - t0 < 1.0                    # a app continua a responder enquanto o upload é processado
+    t.join(5)
+    assert res["r"].status_code == 200

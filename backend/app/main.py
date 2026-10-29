@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from . import coverage as cov
@@ -461,7 +462,8 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         if int(request.headers.get("content-length") or 0) > MAX_SUB_BYTES + 1024:
             raise HTTPException(413, "Ficheiro demasiado grande (máx. 8 MB)")
         data = await request.body()
-        return core.upload_subtitle(mid, filename, data, lang, forced, hi)
+        # em thread à parte: validar, comparar tempos e (se ligado) extrair a faixa embutida com o ffmpeg pode demorar; no loop principal bloqueava a app toda
+        return await run_in_threadpool(core.upload_subtitle, mid, filename, data, lang, forced, hi)
 
     class TranslateEmbeddedIn(BaseModel):
         subtitle_id: int
