@@ -6,8 +6,8 @@ import { Badge, Checkbox, Empty, ErrorBox, PageHeader, Skeleton, useToast } from
 import { SearchBox, useDebounced } from "../components/MediaBrowser";
 import { cx } from "../lib";
 
-interface File { id: number; name: string; lang: string | null; lang_source: string; size: number; mtime: number | null; keep: boolean }
-interface Group { lang_conflict: boolean; content_lang: string | null; media_id: number; hash: string; title: string; year: number | null; deletable: boolean; files: File[] }
+interface File { reappeared: number; id: number; name: string; lang: string | null; lang_source: string; size: number; mtime: number | null; keep: boolean }
+interface Group { reappeared: number; lang_conflict: boolean; content_lang: string | null; media_id: number; hash: string; title: string; year: number | null; deletable: boolean; files: File[] }
 interface Res { total: number; removable: number; conflicts: number; groups: Group[] }
 interface Out { moved: number; requested: number; skipped: { id: number; reason: string }[] }
 const key = (g: Group) => `${g.media_id}:${g.hash}`;
@@ -70,6 +70,9 @@ export default function Duplicates() {
                 <div className="font-medium truncate">{g.title}{g.year && <span className="text-dim font-normal"> ({g.year})</span>}</div>
                 {!g.deletable && <Badge tone="neutral">só leitura</Badge>}
               </div>
+              {g.reappeared > 0 && (
+                <div className="text-xs text-bad flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Este conteúdo já foi movido para backup {g.reappeared}× e <b>voltou a aparecer</b>: outra ferramenta (o Bazarr, por exemplo) está a recriá-lo. Mover outra vez não resolve; confirme o perfil de idiomas e as opções de nomes/HI no Bazarr. Veja a data de cada ficheiro abaixo.</div>
+              )}
               {g.lang_conflict && (
                 <div className="text-xs text-warn flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Os nomes indicam idiomas diferentes mas o conteúdo é igual{g.content_lang ? ` (parece ${g.content_lang})` : ""}: uma das duas está mal etiquetada e conta como legenda que não é. Fica a que corresponde ao conteúdo; confirme antes de mover. Não entra em «Resolver todos».</div>
               )}
@@ -80,6 +83,8 @@ export default function Duplicates() {
                     <span className="font-mono truncate flex-1 min-w-0" title={f.name}>{f.name}</span>
                     {f.lang && <Badge>{f.lang}</Badge>}
                     <span className="text-dim tabular-nums">{Math.round(f.size / 1024)} KB</span>
+                    {f.mtime && <span className="text-dim tabular-nums hidden md:inline" title="Data de modificação do ficheiro">{new Date(f.mtime * 1000).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>}
+                    {f.reappeared > 0 && <Badge tone="bad" title="Já movido para backup e recriado">reapareceu {f.reappeared}×</Badge>}
                     {keepOf(g) === f.id ? <Badge tone="ok">fica</Badge> : <Badge tone="warn">vai para backup</Badge>}
                   </label>
                 ))}

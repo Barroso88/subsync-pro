@@ -1502,6 +1502,11 @@ class App:
             "(SELECT media_id, content_hash FROM subtitles WHERE kind='external' AND present=1 AND content_hash IS NOT NULL AND media_id IS NOT NULL "
             " GROUP BY media_id, content_hash HAVING COUNT(*)>1) ORDER BY lower(coalesce(m.series_title, nullif(m.radarr_title,''), m.title)), m.season, m.episode, s.media_id, s.path")
         writable = {l["id"]: l["effective_write"] for l in self.libraries()}
+        # ficheiros que já movemos para backup e que voltaram a aparecer com o mesmo caminho e conteúdo: alguém (Bazarr, Radarr…) os está a recriar
+        moved: dict[tuple, int] = {}
+        for e in self.db.query("SELECT path, before_hash FROM subtitle_edits WHERE action='delete' AND before_hash IS NOT NULL AND media_id IN (%s)" %
+                               ",".join(str(int(r["media_id"])) for r in rows_) if rows_ else "SELECT NULL WHERE 0"):
+            moved[(e["path"], e["before_hash"])] = moved.get((e["path"], e["before_hash"]), 0) + 1
         groups: dict[tuple, dict] = {}
         for r in rows_:
             d = dict(r)
@@ -1509,11 +1514,13 @@ class App:
                 "media_id": d["media_id"], "hash": d["content_hash"],
                 "title": (d["series_title"] and f"{d['series_title']} S{d['season'] or 0:02d}E{d['episode'] or 0:02d}") or (d["radarr_title"] or "").strip() or d["title"],
                 "year": d["year"], "deletable": bool(writable.get(d["library_id"])), "files": []})
-            g["files"].append({"id": d["id"], "name": os.path.basename(d["path"]), "lang": d["lang"], "lang_source": d["lang_source"], "detected_lang": d["detected_lang"], "size": d["size"], "mtime": d["mtime"], "_r": d})
+            g["files"].append({"id": d["id"], "name": os.path.basename(d["path"]), "lang": d["lang"], "lang_source": d["lang_source"], "detected_lang": d["detected_lang"], "size": d["size"], "mtime": d["mtime"],
+                                   "reappeared": moved.get((d["path"], d["content_hash"]), 0), "_r": d})
         out = []
         for g in groups.values():
             best = min(g["files"], key=lambda f: self._keep_rank(f["_r"]))
             langs = {f["lang"] for f in g["files"] if f["lang"]}
+            g["reappeared"] = sum(f["reappeared"] for f in g["files"])
             g["lang_conflict"] = len(langs) > 1          # ex.: «.pt-PT.srt» e «.pt-BR.srt» com o mesmo conteúdo: um deles está mal etiquetado
             g["content_lang"] = next((f["detected_lang"] for f in g["files"] if f["detected_lang"]), None)
             for f in g["files"]:

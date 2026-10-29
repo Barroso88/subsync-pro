@@ -46,3 +46,20 @@ def test_same_content_with_different_variant_names_keeps_the_one_matching_conten
     assert grp["lang_conflict"] and g["conflicts"] == 1 and g["removable"] == 0 and grp["content_lang"] == "pt-BR"
     assert next(f for f in grp["files"] if f["keep"])["name"].endswith("pt-BR.srt")
     assert setup.get("/api/subtitles/duplicates/all").json()["items"] == []                # não entra em «resolver todos»
+
+
+def test_duplicate_that_reappears_after_being_moved_is_flagged(setup):
+    d = setup.dir
+    dup = d / "Filme Teste (2024).pt.srt"
+    shutil.copy(setup.ptfile, dup)
+    _scan(setup)
+    g = setup.get("/api/subtitles/duplicates").json()["groups"][0]
+    assert g["reappeared"] == 0
+    keep = next(f for f in g["files"] if f["keep"])["id"]
+    rem = next(f for f in g["files"] if not f["keep"])["id"]
+    assert setup.post("/api/subtitles/duplicates/resolve", json={"items": [{"keep": keep, "remove": [rem]}]}).json()["moved"] == 1
+    shutil.copy(setup.ptfile, dup)                                              # «outra ferramenta» recria o mesmo ficheiro no mesmo sítio
+    _scan(setup)
+    g = setup.get("/api/subtitles/duplicates").json()["groups"][0]
+    again = next(f for f in g["files"] if f["name"] == "Filme Teste (2024).pt.srt")
+    assert g["reappeared"] == 1 and again["reappeared"] == 1                      # a app sabe que já o tinha movido e que voltou
