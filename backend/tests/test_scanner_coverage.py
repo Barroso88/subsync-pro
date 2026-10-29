@@ -290,3 +290,28 @@ def test_display_languages_setting_default_and_validation(cfg, fake_probe, media
         assert c.get("/api/settings").json()["display_languages"]["keep"] == ["pt", "en"]
         assert c.put("/api/settings", json={"display_languages": {"hide_others": "sim", "keep": []}}).status_code == 400
         assert c.put("/api/settings", json={"display_languages": {"keep": [1, 2]}}).status_code == 400
+
+
+def test_sample_files_are_not_indexed_and_existing_ones_disappear(core, media_root, monkeypatch):
+    from app import scanner as sc
+    monkeypatch.setattr(sc, "SAMPLE_MAX_BYTES", 150_000)                       # nos testes «pequeno» = menos de 150 KB
+    d = media_root / "Filmes" / "Man on Fire (2004)"
+    d.mkdir()
+    (d / "man.on.fire.2004.mkv").write_bytes(b"\4" * 200_000)
+    (d / "SAMPLE.mkv").write_bytes(b"\6" * 100_000)
+    (d / "SAMPLE.pt-BR.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nx\n", "utf-8")
+    (d / "man.on.fire.2004.pt-PT.srt").write_text(make_srt(60, 30_000, lang="pt-PT"), "utf-8")
+    sm = media_root / "Filmes" / "Sample Movie (2020)"                          # «Sample» no título de um filme a sério (grande): conta
+    sm.mkdir()
+    (sm / "Sample Movie (2020).mkv").write_bytes(b"\7" * 200_000)
+    core.add_library("Filmes", "movies", str(media_root / "Filmes"), True)
+    monkeypatch.setattr(sc, "is_sample", lambda p: False)                       # 1.ª análise «antiga»: o sample entra
+    wait_job(core, core.start_scan(None))
+    assert core.db.one("SELECT 1 FROM media_items WHERE file_name='SAMPLE.mkv' AND present=1")
+    monkeypatch.undo()
+    monkeypatch.setattr(sc, "SAMPLE_MAX_BYTES", 150_000)
+    wait_job(core, core.start_scan(None))                                      # análise nova: o sample deixa de contar
+    names = {r["file_name"] for r in core.db.query("SELECT file_name FROM media_items WHERE present=1")}
+    assert "man.on.fire.2004.mkv" in names and "Sample Movie (2020).mkv" in names and "SAMPLE.mkv" not in names
+    assert not core.db.one("SELECT 1 FROM subtitles WHERE path LIKE '%SAMPLE.pt-BR.srt' AND present=1")           # as legendas do sample também
+    assert core.db.scalar("SELECT COUNT(*) FROM subtitles WHERE media_id=(SELECT id FROM media_items WHERE file_name='man.on.fire.2004.mkv') AND present=1") == 1

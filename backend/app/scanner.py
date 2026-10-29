@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -26,6 +27,22 @@ def _is_sub_dir(name: str) -> bool:
     return name.lower() in SUB_DIRS
 
 
+_SAMPLE = re.compile(r"(^|[^a-z0-9])sample([^a-z0-9]|$)", re.I)
+SAMPLE_MAX_BYTES = 300 * 1024 * 1024
+
+
+def is_sample(path: Path | str) -> bool:
+    """Ficheiros «sample» (excertos de uns minutos que vêm nos releases): não são filmes e não devem aparecer na biblioteca.
+    Só se ignora se o nome tiver «sample» como palavra E o ficheiro for pequeno (um filme com «Sample» no título é maior)."""
+    p = Path(path)
+    if not _SAMPLE.search(p.stem):
+        return False
+    try:
+        return p.stat().st_size < SAMPLE_MAX_BYTES
+    except OSError:
+        return False
+
+
 def walk_library(root: str, ctx: JobContext | None = None):
     """Gera (dir, videos, subs) onde subs inclui as de subpastas Subs/."""
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -35,12 +52,15 @@ def walk_library(root: str, ctx: JobContext | None = None):
         p = Path(dirpath)
         if _is_sub_dir(p.name):
             continue  # tratadas a partir da pasta-mãe
-        videos, subs = [], []
+        videos, subs, samples = [], [], []
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
             if fn.startswith("."):
                 continue
             if ext in VIDEO_EXTS:
+                if is_sample(p / fn):
+                    samples.append(os.path.splitext(fn)[0].lower())
+                    continue
                 videos.append(p / fn)
             elif ext in SUB_EXTS:
                 subs.append(p / fn)
@@ -50,6 +70,8 @@ def walk_library(root: str, ctx: JobContext | None = None):
                     for fn in sorted(fns):
                         if os.path.splitext(fn)[1].lower() in SUB_EXTS and not fn.startswith("."):
                             subs.append(Path(dp) / fn)
+        if samples:      # legendas dos samples (ex.: «SAMPLE.pt.srt») também ficam de fora: pertencem a um ficheiro que não contamos
+            subs = [s for s in subs if not any(s.name.lower().startswith(x + ".") for x in samples)]
         if videos or subs:
             yield p, videos, subs
 
