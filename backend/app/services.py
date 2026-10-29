@@ -57,6 +57,7 @@ class App:
         self.jobs = JobManager(self.db, cfg.max_jobs)
         self._ref_cache: dict = {}
         self._tr_lock = threading.Lock()
+        self._origin_checked: dict[int, float] = {}
         self._ref_lock = threading.Lock()
         self.jobs.mark_interrupted()
         self.scanner = Scanner(self.db, self.settings, cfg.ffprobe_bin, cfg.ffprobe_workers, cfg.ffmpeg_bin)
@@ -936,6 +937,7 @@ class App:
             pass
         self.db.execute("UPDATE downloads SET status='installed', dest_path=?, installed_at=?, staged_path=NULL WHERE id=?",
                         (final, now(), did))
+        self._origin_from_download(dict(r), final)
         add_event(self.db, "download", f"Legenda instalada: {os.path.basename(final)}", "info", media["id"])
         if reindex:
             lib = dict(self.db.one("SELECT * FROM libraries WHERE id=?", (media["library_id"],)))
@@ -949,6 +951,68 @@ class App:
                 except IntegrationError as e:
                     add_event(self.db, "integration", f"Plex não notificado: {e}", "warning", media["id"])
         return self.get_download(did)
+
+    # ---- origem das legendas (app / Bazarr / enviada / traduzida) ------------------------
+    PROVIDER_LABEL = {"opensubtitles": "OpenSubtitles", "opensubtitlescom": "OpenSubtitles.com", "opensubtitlesorg": "OpenSubtitles.org", "subdl": "SubDL",
+                      "legendasdivx": "LegendasDivx", "legendastv": "Legendas.tv", "legendasnet": "Legendas.net", "podnapisi": "Podnapisi", "pipocas": "Pipocas.tv",
+                      "addic7ed": "Addic7ed", "subscene": "Subscene", "yifysubtitles": "YIFY Subtitles", "deepl": "DeepL", "gemini": "Gemini"}
+
+    def _record_origin(self, path: str, media_id: int, origin: str, provider: str | None, detail: str | None) -> None:
+        self.db.execute("INSERT OR REPLACE INTO sub_origins(path,media_id,origin,provider,detail,at) VALUES(?,?,?,?,?,?)", (path, media_id, origin, provider, detail, now()))
+
+    def _origin_from_download(self, r: dict, final: str) -> None:
+        ev = jloads(r.get("evaluation"), {}) or {}
+        mid = r["media_id"]
+        if ev.get("translation"):
+            self._record_origin(final, mid, "translation", ev["translation"].get("engine"),
+                                f"traduzida de {ev['translation'].get('source_lang') or '?'}" + (" (faixa embutida)" if ev["translation"].get("embedded") else ""))
+        elif r["provider"] == "upload":
+            self._record_origin(final, mid, "upload", None, None)
+        else:
+            self._record_origin(final, mid, "app", r["provider"], f"score {r['score']}" if r.get("score") is not None else None)
+
+    def _origin_view(self, row: dict) -> dict:
+        p = row["provider"]
+        return {"origin": row["origin"], "provider": p, "provider_label": self.PROVIDER_LABEL.get((p or "").lower(), p), "detail": row["detail"], "at": row["at"]}
+
+    def _bazarr_attribute(self, media: dict, svc=None) -> int:
+        """Liga ficheiros do filme ao fornecedor que o Bazarr diz ter usado (pelo nome do ficheiro) e guarda. Devolve quantos novos."""
+        svc = svc or self._integration("bazarr")
+        if svc is None or media.get("kind") != "movie" or not media.get("radarr_id"):
+            return 0
+        subs = self.db.query("SELECT path FROM subtitles WHERE media_id=? AND kind='external' AND present=1", (media["id"],))
+        known = {r["path"] for r in self.db.query("SELECT path FROM sub_origins WHERE media_id=?", (media["id"],))}
+        todo = {os.path.basename(s["path"]): s["path"] for s in subs if s["path"] not in known}
+        if not todo:
+            return 0
+        n = 0
+        try:
+            for e in svc.movie_history(media["radarr_id"]):          # do mais recente para o mais antigo: o primeiro de cada ficheiro é o que o criou por último
+                path = todo.pop(e["file"], None)
+                if path:
+                    self._record_origin(path, media["id"], "bazarr", e["provider"], f"score {e['score']}" if e.get("score") else None)
+                    n += 1
+        except IntegrationError as ex:
+            log.info("origens (Bazarr): %s", scrub(str(ex)))
+        return n
+
+    def media_origins(self, media_id: int) -> list[dict]:
+        media = self.media_dict(media_id)
+        # instalações feitas pela app antes de existir este registo: o histórico de downloads já sabe de onde vieram
+        known = {r["path"] for r in self.db.query("SELECT path FROM sub_origins WHERE media_id=?", (media_id,))}
+        for d in self.db.query("SELECT * FROM downloads WHERE media_id=? AND status='installed' AND dest_path IS NOT NULL ORDER BY id", (media_id,)):
+            if d["dest_path"] not in known and os.path.isfile(d["dest_path"]):
+                self._origin_from_download(dict(d), d["dest_path"])
+                known.add(d["dest_path"])
+        if time.monotonic() - self._origin_checked.get(media_id, -1e9) > 600:      # no máximo 1 pergunta ao Bazarr por filme a cada 10 min
+            self._origin_checked[media_id] = time.monotonic()
+            self._bazarr_attribute(media)
+        out = []
+        for s in self.db.query("SELECT id,path FROM subtitles WHERE media_id=? AND kind='external' AND present=1", (media_id,)):
+            o = self.db.one("SELECT * FROM sub_origins WHERE path=?", (s["path"],))
+            if o:
+                out.append({"subtitle_id": s["id"], **self._origin_view(dict(o))})
+        return out
 
     def discard(self, did: int) -> None:
         r = self.db.one("SELECT * FROM downloads WHERE id=?", (did,))
@@ -1161,7 +1225,13 @@ class App:
             log.warning("reanálise após Bazarr: %s", scrub(str(e)))
         now_cov = cov.compute(self.db, self.settings, [media_id])[media_id]
         found = lang in now_cov["covered"] and not had
-        msg = ("Legenda encontrada e validada." if found else
+        self._bazarr_attribute(media, svc)
+        src = None
+        if found:
+            newest = self.db.one("SELECT o.* FROM sub_origins o JOIN subtitles s ON s.path=o.path WHERE o.media_id=? AND o.origin='bazarr' AND s.present=1 "
+                                 "ORDER BY o.at DESC LIMIT 1", (media_id,))
+            src = self._origin_view(dict(newest)) if newest else None
+        msg = (("Legenda encontrada e validada" + (f" (Bazarr · {src['provider_label']}{', ' + src['detail'] if src['detail'] else ''})" if src else "") + ".") if found else
                "O Bazarr não obteve nenhuma legenda nova." if r.get("ok") else f"O Bazarr não encontrou: {r.get('message')}")
         add_event(self.db, "bazarr", f"Bazarr ({media['title']}, {lang}): {msg}", "info" if found else "warning", media_id)
         if self.settings.get("notify_plex_after_install") and found:
@@ -1169,7 +1239,7 @@ class App:
                 self.refresh_plex(media_id)
             except IntegrationError:
                 pass
-        return {"media_id": media_id, "lang": lang, "found": found, "message": msg, "had_before": had}
+        return {"media_id": media_id, "lang": lang, "found": found, "message": msg, "had_before": had, "source": src}
 
     def start_bazarr_batch(self, media_ids: list[int], languages: list[str] | None) -> int:
         if not media_ids:

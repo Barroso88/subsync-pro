@@ -89,6 +89,9 @@ def test_search_prepare_install_flow_and_conflicts(client):
     assert not os.path.exists(d["dest_path"])               # preparar não escreve
     inst = client.post(f"/api/downloads/{d['id']}/install", json={"policy": "fail"}).json()
     assert inst["status"] == "installed" and os.path.exists(inst["dest_path"])
+    # origem registada: instalada pela app a partir do OpenSubtitles
+    o = client.get(f"/api/media/{e2['id']}/origins").json()
+    assert len(o) == 1 and o[0]["origin"] == "app" and o[0]["provider"] == "opensubtitles" and o[0]["provider_label"] == "OpenSubtitles"
     # reanálise: já cobre pt-PT
     assert ep(client, 2)["missing"] == []
     # novo download para o mesmo destino => conflito, nada sobrescrito
@@ -333,3 +336,13 @@ def test_login_remember_controls_cookie_lifetime(cfg, fake_probe):
         assert "max-age=15552000" in r.headers["set-cookie"].lower() and "httponly" in r.headers["set-cookie"].lower()      # 180 dias
         r = c.post("/api/auth/login", json={"password": "s3cret", "remember": False})   # sem memorizar: cookie de sessão
         assert "max-age" not in r.headers["set-cookie"].lower() and "samesite=strict" in r.headers["set-cookie"].lower()
+
+
+def test_origin_is_backfilled_from_download_history(client):
+    e2 = ep(client, 2)
+    r = client.post(f"/api/media/{e2['id']}/search").json()["results"][0]["result"]
+    d = client.post(f"/api/media/{e2['id']}/prepare", json={"result": r, "language": "pt-PT"}).json()
+    inst = client.post(f"/api/downloads/{d['id']}/install", json={"policy": "fail"}).json()
+    client.core.db.execute("DELETE FROM sub_origins")                                   # como se tivesse sido instalada antes do registo existir
+    o = client.get(f"/api/media/{e2['id']}/origins").json()
+    assert len(o) == 1 and o[0]["origin"] == "app" and o[0]["provider"] == "opensubtitles"

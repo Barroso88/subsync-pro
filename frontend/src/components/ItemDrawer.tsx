@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench, Upload } from "lucide-react";
 import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
-import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
+import { baseName, epCode, fmtDur, fmtSize, providerLabel, resolution, cx } from "../lib";
 import { useLangFilter, useMeta } from "../hooks";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
 import { CompatBadge, Factors, LangChips, RatingBadge, ScoreBar, SyncBadge, langName } from "./subs";
@@ -184,6 +184,8 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   const meta = useMeta();
   const [tools, setTools] = useState<Sub | null>(null);
   const lf = useLangFilter();
+  const origins = useQuery({ queryKey: ["origins", d.id], queryFn: () => api.get<{ subtitle_id: number; origin: string; provider: string | null; provider_label: string | null; detail: string | null; at: string | null }[]>(`/media/${d.id}/origins`), staleTime: 60_000 });
+  const originOf = (id: number) => origins.data?.find((o) => o.subtitle_id === id);
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? d.subtitles : d.subtitles.filter((s) => lf.visible(s.lang));
   const hiddenN = d.subtitles.length - d.subtitles.filter((s) => lf.visible(s.lang)).length;
@@ -205,6 +207,13 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
             {!!s.hi && <Badge tone="neutral">SDH/HI</Badge>}
             {!s.lang && <Badge tone="warn">Idioma desconhecido</Badge>}
             {s.kind === "embedded" && !s.text_based && <Badge title="Legenda gráfica (PGS/VobSub): não analisável">Imagem</Badge>}
+            {s.kind === "external" && (() => {
+              const o = originOf(s.id);
+              if (!o) return origins.isLoading ? null : <Badge title="Só se conhece a origem das legendas instaladas pela app, pedidas ao Bazarr (pelo histórico dele), enviadas por si ou traduzidas aqui.">Origem desconhecida</Badge>;
+              const label = o.origin === "app" ? `App · ${o.provider_label ?? o.provider}` : o.origin === "bazarr" ? `Bazarr · ${o.provider_label ?? o.provider}`
+                : o.origin === "upload" ? "Enviada por si" : `Traduzida · ${o.provider_label ?? o.provider}`;
+              return <Badge tone={o.origin === "bazarr" ? "accent" : "info"} title={[o.detail, o.at ? new Date(o.at).toLocaleString("pt-PT") : null].filter(Boolean).join(" · ") || undefined}>{label}</Badge>;
+            })()}
             {s.association !== "certain" && <Badge tone="warn" title="Associação baseada em heurística">Associação {s.association === "probable" ? "provável" : "incerta"}</Badge>}
             {s.status !== "ok" && <Badge tone="bad">{s.status === "empty" ? "Vazia" : "Inválida"}</Badge>}
           </div>
@@ -315,7 +324,7 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       )}
       {bazarrOn && (
         <div className="card p-3.5 space-y-2.5">
-          <div className="text-sm font-medium">Pedir ao Bazarr</div>
+          <div className="text-sm font-medium">Pedir ao Bazarr <span className="text-xs text-mute font-normal">· fonte: Bazarr (fornecedores dele)</span></div>
           <div className="text-xs text-mute">O Bazarr procura nos fornecedores dele (ex.: LegendasDivx) e grava a legenda; a app valida-a depois. Pode demorar até um minuto.</div>
           <div className="flex gap-2 flex-wrap">{baseLangs.filter((l) => ["pt-PT", "pt-BR", "en", "es", "fr", "de", "it"].includes(l)).map((l) => (
             <button key={l} className="btn-ghost" disabled={bzBusy !== null} onClick={() => askBazarr(l)}>{bzBusy === l ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}{l}</button>
@@ -376,7 +385,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
         <div className="min-w-0">
           <div className="text-sm font-medium break-all">{r.release || r.file_name || "(sem nome de release)"}</div>
           <div className="text-xs text-dim mt-0.5 flex gap-2 flex-wrap items-center">
-            <Badge tone="accent">{langName(meta, r.language)}</Badge><span>{r.provider}</span>
+            <Badge tone="accent">{langName(meta, r.language)}</Badge><Badge tone="info" title="Resultado da pesquisa da própria SubSync (API oficial do fornecedor)">Fonte: App · {providerLabel(r.provider)}</Badge>
             {r.hearing_impaired && <Badge>SDH/HI</Badge>}{r.forced && <Badge tone="warn">Forçada</Badge>}
             {(r.ai_translated || r.machine_translated) && <Badge tone="warn">Tradução automática</Badge>}
             {r.from_trusted && <Badge tone="ok">Confiável</Badge>}

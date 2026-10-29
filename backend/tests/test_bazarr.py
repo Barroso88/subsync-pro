@@ -96,3 +96,40 @@ def test_batch_job_counts(ready):
     assert job["status"] == "done"
     import json
     assert json.loads(job["result"])["found"] == 1
+
+
+def test_origin_of_bazarr_downloads_comes_from_its_history_and_is_stored(ready):
+    core, mv, root = ready
+    d = root / "Filmes" / "Filme Teste (2024)"
+    seen = []
+
+    def h(req: httpx.Request):
+        seen.append((req.method, req.url.path, dict(req.url.params)))
+        if req.method == "GET" and req.url.path == "/api/movies/history":
+            return httpx.Response(200, json={"total": 3, "data": [
+                {"radarrId": 7111, "action": 1, "provider": "opensubtitlescom", "score": "99.44%", "parsed_timestamp": "10/29/26 23:33:29",
+                 "subtitles_path": "/movies/Filme Teste (2024)/Filme Teste (2024).pt-PT.srt", "language": {"name": "Portuguese"}},
+                {"radarrId": 7111, "action": 1, "provider": "legendasdivx", "score": "80%", "subtitles_path": "/movies/Filme Teste (2024)/Filme Teste (2024).pt-PT.srt"},   # mais antigo: ignora
+                {"radarrId": 7111, "action": 4, "provider": "x", "subtitles_path": None}]})
+        (d / "Filme Teste (2024).pt-PT.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+        return httpx.Response(204)
+    core.transport = httpx.MockTransport(h)
+    r = core.bazarr_request(mv["id"], "pt-PT")
+    assert r["found"] and r["source"]["provider_label"] == "OpenSubtitles.com" and "Bazarr · OpenSubtitles.com, score 99.44%" in r["message"]
+    assert ("GET", "/api/movies/history", {"start": "0", "length": "60", "radarrid": "7111"}) in seen
+    o = core.media_origins(mv["id"])
+    assert len(o) == 1 and o[0]["origin"] == "bazarr" and o[0]["provider"] == "opensubtitlescom" and o[0]["detail"] == "score 99.44%"
+    n_hist = sum(1 for m, p, _ in seen if p == "/api/movies/history")
+    core.media_origins(mv["id"])
+    assert sum(1 for m, p, _ in seen if p == "/api/movies/history") == n_hist          # já guardado: não volta a perguntar ao Bazarr
+
+
+def test_origin_unknown_when_bazarr_has_no_record_and_unreachable_is_harmless(ready):
+    core, mv, root = ready
+    d = root / "Filmes" / "Filme Teste (2024)"
+    (d / "Filme Teste (2024).pt-PT.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+    core.scanner.scan_library(dict(core.db.one("SELECT * FROM libraries WHERE id=?", (mv["library_id"],))), None, mv["dir"])
+    core.transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []}))
+    assert core.media_origins(mv["id"]) == []                                           # sem registo: não se inventa origem
+    core.transport = httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("sem rede")))
+    assert core.media_origins(mv["id"]) == []                                           # Bazarr em baixo: não rebenta

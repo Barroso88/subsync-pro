@@ -45,6 +45,23 @@ class Bazarr:
         d = r.json().get("data", r.json())
         return {"ok": True, "version": d.get("bazarr_version"), "name": "Bazarr"}
 
+    def movie_history(self, radarr_id: int, length: int = 60) -> list[dict]:
+        """Histórico do filme: que fornecedor do Bazarr descarregou cada ficheiro (do mais recente para o mais antigo)."""
+        r = self._call("GET", "/movies/history", timeout=20, start=0, length=int(length), radarrid=int(radarr_id))
+        if r.status_code >= 400:
+            raise IntegrationError(f"Bazarr respondeu HTTP {r.status_code} ao ler o histórico.")
+        try:
+            data = r.json().get("data", [])
+        except ValueError:
+            return []
+        out = []
+        for e in data if isinstance(data, list) else []:
+            if e.get("radarrId") not in (None, int(radarr_id)) or not e.get("subtitles_path") or not e.get("provider"):
+                continue
+            out.append({"file": str(e["subtitles_path"]).replace("\\", "/").rsplit("/", 1)[-1], "provider": str(e["provider"]), "score": e.get("score"),
+                        "at": e.get("parsed_timestamp"), "language": (e.get("language") or {}).get("name")})
+        return out
+
     def download_movie_subtitle(self, radarr_id: int, lang: str) -> dict:
         """Equivale ao botão de pesquisa do Bazarr. Pode demorar (procura em todos os fornecedores dele)."""
         code = BAZARR_LANG.get(lang)

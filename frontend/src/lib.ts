@@ -31,3 +31,6 @@ export const fmtTs = (ms: number) => {
   const h = Math.floor(t / 3600000), m = Math.floor((t % 3600000) / 60000), sec = Math.floor((t % 60000) / 1000), r = t % 1000;
   return `${neg ? "-" : ""}${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")},${String(r).padStart(3, "0")}`;
 };
+
+const PROVIDERS: Record<string, string> = { opensubtitles: "OpenSubtitles", opensubtitlescom: "OpenSubtitles.com", subdl: "SubDL", legendasdivx: "LegendasDivx", legendastv: "Legendas.tv", podnapisi: "Podnapisi", pipocas: "Pipocas.tv", deepl: "DeepL", gemini: "Gemini" };
+export const providerLabel = (p?: string | null) => (p ? PROVIDERS[p.toLowerCase()] ?? p : "");

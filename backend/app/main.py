@@ -466,6 +466,11 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         # em thread à parte: validar, comparar tempos e (se ligado) extrair a faixa embutida com o ffmpeg pode demorar; no loop principal bloqueava a app toda
         return await run_in_threadpool(core.upload_subtitle, mid, filename, data, lang, forced, hi)
 
+    @api.get("/media/{mid}/origins")
+    def media_origins(mid: int):
+        """Origem de cada legenda externa conhecida: app (fornecedor), Bazarr (fornecedor do Bazarr), enviada por si ou traduzida."""
+        return core.media_origins(mid)
+
     class TranslateEmbeddedIn(BaseModel):
         subtitle_id: int
         target: str
