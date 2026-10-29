@@ -21,7 +21,11 @@ export const cx = (...a: (string | false | null | undefined)[]) => a.filter(Bool
 export const baseName = (p: string) => p.split("/").pop() || p;
 export const langLabel = (c: string | null | undefined, langs?: { code: string; name: string }[]) =>
   !c ? "Desconhecido" : langs?.find((l) => l.code === c)?.name ?? c;
-export const resolution = (h: number | null) => (!h ? "" : h >= 2000 ? "4K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : `${h}p`);
+/** Rótulo de resolução. Usa a LARGURA: filmes em formato panorâmico (2,40:1) têm 1920×800 e são «1080p»; só pela altura (800) apareciam como 720p. */
+export const resolution = (h: number | null, w?: number | null) => {
+  if (w && w >= 1200) return w >= 3200 ? "4K" : w >= 1800 ? "1080p" : "720p";
+  return !h ? "" : h >= 2000 ? "4K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : `${h}p`;
+};
 export const fmtTs = (ms: number) => {
   const neg = ms < 0; const t = Math.abs(Math.round(ms));
   const h = Math.floor(t / 3600000), m = Math.floor((t % 3600000) / 60000), sec = Math.floor((t % 60000) / 1000), r = t % 1000;

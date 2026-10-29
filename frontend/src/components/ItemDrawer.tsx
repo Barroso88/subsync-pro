@@ -40,7 +40,7 @@ export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | 
               {d.kind === "movie" && d.file_title && d.file_title !== d.title && <div className="text-xs text-dim -mt-1">Título original (ficheiro): {d.file_title}</div>}
               <div className="flex flex-wrap gap-1.5">
                 {d.video_codec && <Badge>{d.video_codec.toUpperCase()}</Badge>}
-                {d.height && <Badge>{resolution(d.height)}</Badge>}
+                {d.height && <Badge>{resolution(d.height, d.width)}</Badge>}
                 {d.fps && <Badge>{d.fps} fps</Badge>}
                 <Badge>{fmtDur(d.duration)}</Badge>
                 <Badge>{fmtSize(d.size).replace(" MB", " MB")}</Badge>
