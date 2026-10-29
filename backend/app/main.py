@@ -407,10 +407,18 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     # ---- legendas: pesquisa / download -----------------------------------------
     class SearchIn(BaseModel):
         languages: list[str] | None = None
+        sources: list[str] | None = None      # «app» e/ou «bazarr»; omitido = todas as disponíveis
 
     @api.post("/media/{mid}/search")
     def search(mid: int, b: SearchIn | None = None):
-        return core.search(mid, b.languages if b else None)
+        return core.search(mid, b.languages if b else None, b.sources if b else None)
+
+    class BazarrDownloadIn(BaseModel):
+        result: dict
+
+    @api.post("/media/{mid}/bazarr/download")
+    def bazarr_download(mid: int, b: BazarrDownloadIn):
+        return core.bazarr_download_candidate(mid, b.result)
 
     class PrepareIn(BaseModel):
         result: dict

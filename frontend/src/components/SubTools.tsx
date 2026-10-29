@@ -214,7 +214,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 }
 
 interface Edit { id: number; name: string; action: string; created_at: string; restored_at: string | null; backup_exists: boolean; params: Record<string, any> }
-const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup" };
+const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", bazarr_overwrite: "Substituída pelo Bazarr" };
 
 export function EditHistory({ mediaId }: { mediaId: number }) {
   const qc = useQueryClient();

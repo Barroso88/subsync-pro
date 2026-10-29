@@ -13,6 +13,11 @@ from .common import IntegrationError, validate_service_url
 
 # idioma interno -> código de idioma do Bazarr
 BAZARR_LANG = {"pt-PT": "pt", "pt-BR": "pb", "en": "en", "es": "es", "fr": "fr", "de": "de", "it": "it"}
+BAZARR_TO_LANG = {v: k for k, v in BAZARR_LANG.items()}
+
+
+def _b(v) -> bool:
+    return str(v).strip().lower() in ("true", "1", "yes")
 
 
 class Bazarr:
@@ -61,6 +66,47 @@ class Bazarr:
             out.append({"file": str(e["subtitles_path"]).replace("\\", "/").rsplit("/", 1)[-1], "provider": str(e["provider"]), "score": e.get("score"),
                         "at": e.get("parsed_timestamp"), "language": (e.get("language") or {}).get("name")})
         return out
+
+    def search_movie(self, radarr_id: int) -> list[dict]:
+        """«Pesquisa manual» do Bazarr (`GET /providers/movies`): candidatas de TODOS os fornecedores dele. Demora (~10 s ou mais)."""
+        r = self._call("GET", "/providers/movies", timeout=180, radarrid=int(radarr_id))
+        if r.status_code == 404:
+            raise IntegrationError("O Bazarr não conhece este filme (id do Radarr).")
+        if r.status_code >= 400:
+            raise IntegrationError(f"Bazarr respondeu HTTP {r.status_code} na pesquisa.")
+        try:
+            j = r.json()
+        except ValueError:
+            return []
+        data = j.get("data", j) if isinstance(j, dict) else j
+        out = []
+        for e in data if isinstance(data, list) else []:
+            if not e.get("provider") or not e.get("subtitle"):
+                continue
+            ri = e.get("release_info")
+            release = " / ".join(str(x).strip() for x in ri if str(x).strip()) if isinstance(ri, list) else str(ri or "")
+            release = " ".join(release.split())[:300]
+            out.append({"provider": str(e["provider"]), "subtitle": str(e["subtitle"]), "language": str(e.get("language") or ""),
+                        "hi": _b(e.get("hearing_impaired")), "forced": _b(e.get("forced")), "original_format": str(e.get("original_format", "False")),
+                        "score": e.get("score"), "score_without_hash": e.get("score_without_hash"), "release": release,
+                        "matches": [str(x) for x in (e.get("matches") or [])], "dont_matches": [str(x) for x in (e.get("dont_matches") or [])],
+                        "uploader": e.get("uploader") if isinstance(e.get("uploader"), str) else None})
+        return out
+
+    def download_candidate(self, radarr_id: int, provider: str, subtitle: str, hi: bool, forced: bool, original_format: str = "False") -> dict:
+        """`POST /providers/movies`: o Bazarr descarrega a legenda escolhida e grava-a ao lado do vídeo."""
+        r = self._call("POST", "/providers/movies", timeout=240, radarrid=int(radarr_id), hi=str(bool(hi)), forced=str(bool(forced)),
+                       original_format=str(original_format), provider=provider, subtitle=subtitle)
+        if r.status_code in (200, 204):
+            return {"ok": True, "status": r.status_code}
+        if r.status_code == 404:
+            raise IntegrationError("O Bazarr não conhece este filme (id do Radarr).")
+        msg = ""
+        try:
+            msg = str(r.json().get("message") or "")[:200]
+        except ValueError:
+            pass
+        return {"ok": False, "status": r.status_code, "message": msg or f"HTTP {r.status_code}"}
 
     def download_movie_subtitle(self, radarr_id: int, lang: str) -> dict:
         """Equivale ao botão de pesquisa do Bazarr. Pode demorar (procura em todos os fornecedores dele)."""

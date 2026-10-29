@@ -1,3 +1,5 @@
+import os
+
 import httpx
 import pytest
 
@@ -133,3 +135,83 @@ def test_origin_unknown_when_bazarr_has_no_record_and_unreachable_is_harmless(re
     assert core.media_origins(mv["id"]) == []                                           # sem registo: não se inventa origem
     core.transport = httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("sem rede")))
     assert core.media_origins(mv["id"]) == []                                           # Bazarr em baixo: não rebenta
+
+
+def _bz_candidates():
+    base = {"hearing_impaired": "False", "forced": "False", "original_format": "False", "uploader": "u"}
+    return [{**base, "language": "pb", "provider": "opensubtitlescom", "subtitle": "tok-1", "score": 99, "release_info": ["Filme Teste 2024 1080p WEB-DL", "x"],
+             "matches": ["hash", "year", "title"], "dont_matches": ["resolution"]},
+            {**base, "language": "pt", "provider": "legendasdivx", "subtitle": "tok-2", "score": 90, "release_info": "\n\nPara a versão:\r\nFilme.Teste.2024.720p", "matches": ["year"], "dont_matches": []},
+            {**base, "language": "ja", "provider": "subtitlecat", "subtitle": "tok-3", "score": 50, "release_info": [], "matches": [], "dont_matches": []}]
+
+
+def test_search_merges_bazarr_candidates_with_source_and_language_filter(ready):
+    core, mv, root = ready
+    seen = []
+
+    def h(req: httpx.Request):
+        seen.append((req.method, req.url.path, dict(req.url.params)))
+        if req.url.path == "/api/providers/movies" and req.method == "GET":
+            return httpx.Response(200, json={"data": _bz_candidates()})
+        return httpx.Response(404)
+    core.transport = httpx.MockTransport(h)
+    res = core.search(mv["id"], ["pt-PT", "pt-BR"])
+    assert not [e for e in res["errors"] if e["provider"] == "bazarr"] and ("GET", "/api/providers/movies", {"radarrid": "7111"}) in seen
+    by = {r["result"]["via"]: r["result"] for r in res["results"]}
+    assert set(by) == {"opensubtitlescom", "legendasdivx"}                                  # o japonês fica de fora (filtro de idiomas)
+    assert by["opensubtitlescom"]["provider"] == "bazarr" and by["opensubtitlescom"]["language"] == "pt-BR" and by["legendasdivx"]["language"] == "pt-PT"
+    assert by["opensubtitlescom"]["hash_match"] is True and by["opensubtitlescom"]["extra"]["provider_label"] == "OpenSubtitles.com"
+    assert "Para a versão: Filme.Teste.2024.720p" in by["legendasdivx"]["release"] and "\n" not in by["legendasdivx"]["release"]
+    assert next(r for r in res["results"] if r["result"]["via"] == "opensubtitlescom")["evaluation"]["compat"] == "hash"
+    assert any("bazarr: pesquisa manual → 2" in t for t in res["query"]["tried"])
+    # só a app: não pergunta ao Bazarr; só o Bazarr: não corre a app
+    seen.clear()
+    assert core.search(mv["id"], ["pt-PT"], ["app"])["results"] == [] and seen == []
+    assert len(core.search(mv["id"], ["pt-PT", "pt-BR"], ["bazarr"])["results"]) == 2
+
+
+def test_search_reports_bazarr_failure_without_hiding_the_rest(ready):
+    core, mv, root = ready
+    core.transport = httpx.MockTransport(lambda r: httpx.Response(401))
+    res = core.search(mv["id"], ["pt-PT"])
+    bz = [e for e in res["errors"] if e["provider"] == "bazarr"]
+    assert res["results"] == [] and bz and "recusou a API key" in bz[0]["message"]
+
+
+def test_download_candidate_via_bazarr_records_origin_and_backs_up_overwritten_file(ready):
+    core, mv, root = ready
+    d = root / "Filmes" / "Filme Teste (2024)"
+    target = d / "Filme Teste (2024).pt-PT.srt"
+    original = make_srt(60, lang="pt-PT", offset_ms=0)
+    target.write_text(original, "utf-8")
+    core.scanner.scan_library(dict(core.db.one("SELECT * FROM libraries WHERE id=?", (mv["library_id"],))), None, mv["dir"])
+    calls = []
+
+    def h(req: httpx.Request):
+        calls.append((req.method, req.url.path, dict(req.url.params)))
+        if req.method == "POST" and req.url.path == "/api/providers/movies":
+            target.write_text(make_srt(80, lang="pt-PT", offset_ms=2000), "utf-8")           # o Bazarr substitui o ficheiro
+            (d / "Filme Teste (2024).pt-BR.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+            return httpx.Response(204)
+        if req.method == "GET" and req.url.path == "/api/movies/history":
+            return httpx.Response(200, json={"data": [{"radarrId": 7111, "provider": "opensubtitlescom", "score": "99%", "subtitles_path": "/m/Filme Teste (2024).pt-PT.srt"},
+                                                      {"radarrId": 7111, "provider": "opensubtitlescom", "score": "99%", "subtitles_path": "/m/Filme Teste (2024).pt-BR.srt"}]})
+        return httpx.Response(404)
+    core.transport = httpx.MockTransport(h)
+    cand = {"provider": "bazarr", "file_id": "tok-1", "via": "opensubtitlescom", "language": "pt-PT", "extra": {"hi": False, "forced": False, "original_format": "False", "provider_label": "OpenSubtitles.com"}}
+    r = core.bazarr_download_candidate(mv["id"], cand)
+    post = next(c for c in calls if c[0] == "POST")
+    assert post[2] == {"radarrid": "7111", "hi": "False", "forced": "False", "original_format": "False", "provider": "opensubtitlescom", "subtitle": "tok-1"}
+    assert r["found"] and r["overwritten"] == ["Filme Teste (2024).pt-PT.srt"] and "OpenSubtitles.com" in r["message"] and "restaurável" in r["message"]
+    # origem registada e cópia do ficheiro substituído restaurável
+    origins = {os.path.basename(o["path"]): o for o in core.db.query("SELECT * FROM sub_origins")}
+    assert origins["Filme Teste (2024).pt-PT.srt"]["origin"] == "bazarr" and origins["Filme Teste (2024).pt-BR.srt"]["provider"] == "opensubtitlescom"
+    e = core.edits_for(mv["id"])[0]
+    assert e["action"] == "bazarr_overwrite" and e["backup_exists"]
+    assert core.restore_edit(e["id"], force=False)["restored"] and target.read_text("utf-8") == original      # volta o original exato
+    # resultado que não é do Bazarr / Bazarr recusa
+    with pytest.raises(ServiceError):
+        core.bazarr_download_candidate(mv["id"], {"provider": "opensubtitles", "file_id": "1"})
+    core.transport = httpx.MockTransport(lambda req: httpx.Response(500, json={"message": "falhou"}))
+    r = core.bazarr_download_candidate(mv["id"], cand)
+    assert r["found"] is False and "falhou" in r["message"]

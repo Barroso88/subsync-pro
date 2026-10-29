@@ -468,18 +468,44 @@ class App:
             forced_policy="include" if s["prefer_forced"] else "exclude",
             max_results=int(s["providers"]["opensubtitles"].get("max_results", 30)))
 
-    def search(self, media_id: int, languages: list[str] | None = None) -> dict:
+    def _bazarr_search(self, media: dict, q, s: dict) -> list[dict]:
+        """Pesquisa manual no Bazarr (fornecedores dele) → candidatas no mesmo formato dos resultados da app, avaliadas pelas mesmas regras."""
+        from .integrations.bazarr import BAZARR_TO_LANG
+        svc = self._integration("bazarr")
+        out = []
+        for c in svc.search_movie(media["radarr_id"]):
+            lang = BAZARR_TO_LANG.get(c["language"], c["language"])
+            if q.languages and lang not in q.languages:
+                continue
+            r = SubtitleResult(provider="bazarr", file_id=c["subtitle"], language=lang, release=c["release"], file_name=c["release"],
+                               hash_match="hash" in c["matches"], hearing_impaired=c["hi"], forced=c["forced"], found_by="Bazarr", via=c["provider"], uploader=c["uploader"],
+                               extra={"hi": c["hi"], "forced": c["forced"], "original_format": c["original_format"], "bazarr_score": c["score"],
+                                      "matches": c["matches"], "dont_matches": c["dont_matches"], "provider_label": self.PROVIDER_LABEL.get(c["provider"].lower(), c["provider"])})
+            ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
+            out.append({"result": r.to_dict(), "evaluation": ev.to_dict()})
+        return out
+
+    def search(self, media_id: int, languages: list[str] | None = None, sources: list[str] | None = None) -> dict:
         media = self.media_dict(media_id)
         s = self.settings.all()
         q = self.build_query(media, languages)
         results, errors = [], []
+        run_app = sources is None or "app" in sources
+        bz_future = bz_pool = None
+        if self._integration("bazarr") is not None and (sources is None or "bazarr" in sources):
+            if media["kind"] == "movie" and media.get("radarr_id"):
+                from concurrent.futures import ThreadPoolExecutor      # em paralelo com a pesquisa da app: a do Bazarr demora (corre todos os fornecedores dele)
+                bz_pool = ThreadPoolExecutor(max_workers=1)
+                bz_future = bz_pool.submit(self._bazarr_search, media, q, s)
+            elif sources is not None:
+                errors.append({"provider": "bazarr", "message": "O Bazarr só pesquisa filmes com id do Radarr (sincronize os metadados do Radarr)."})
         steps = [("full", "hash + identificação" if q.moviehash else "identificação")]
         if q.moviehash and (q.imdb_id or q.tmdb_id or q.title):
             steps.append(("hash", "só hash do ficheiro"))
         steps.append(("title", "só título, sem ano"))
         tried: list[str] = []
         for name, pcfg in sorted(s["providers"].items(), key=lambda kv: kv[1].get("priority", 99)):
-            if not pcfg.get("enabled") or name not in PROVIDERS:
+            if not run_app or not pcfg.get("enabled") or name not in PROVIDERS:
                 continue
             p = self.provider(name)
             if not p.configured():
@@ -502,6 +528,15 @@ class App:
             except ProviderError as e:
                 errors.append({"provider": name, "message": str(e), "auth": e.auth, "rate_limited": e.rate_limited,
                                "retry_after": e.retry_after})
+        if bz_future is not None:
+            try:
+                found = bz_future.result()
+                tried.append(f"bazarr: pesquisa manual → {len(found)}")
+                results.extend(found)
+            except (IntegrationError, ServiceError) as e:
+                errors.append({"provider": "bazarr", "message": str(e)})
+            finally:
+                bz_pool.shutdown(wait=False)
         results.sort(key=lambda x: (-x["evaluation"]["score"], -(x["result"]["download_count"] or 0)))
         return {"media_id": media_id, "query": {"languages": q.languages, "hash_used": bool(q.moviehash), "tried": tried},
                 "results": results, "errors": errors}
@@ -975,14 +1010,14 @@ class App:
         p = row["provider"]
         return {"origin": row["origin"], "provider": p, "provider_label": self.PROVIDER_LABEL.get((p or "").lower(), p), "detail": row["detail"], "at": row["at"]}
 
-    def _bazarr_attribute(self, media: dict, svc=None) -> int:
+    def _bazarr_attribute(self, media: dict, svc=None, force_files: set[str] | None = None) -> int:
         """Liga ficheiros do filme ao fornecedor que o Bazarr diz ter usado (pelo nome do ficheiro) e guarda. Devolve quantos novos."""
         svc = svc or self._integration("bazarr")
         if svc is None or media.get("kind") != "movie" or not media.get("radarr_id"):
             return 0
         subs = self.db.query("SELECT path FROM subtitles WHERE media_id=? AND kind='external' AND present=1", (media["id"],))
         known = {r["path"] for r in self.db.query("SELECT path FROM sub_origins WHERE media_id=?", (media["id"],))}
-        todo = {os.path.basename(s["path"]): s["path"] for s in subs if s["path"] not in known}
+        todo = {os.path.basename(s["path"]): s["path"] for s in subs if s["path"] not in known or os.path.basename(s["path"]) in (force_files or set())}
         if not todo:
             return 0
         n = 0
@@ -1240,6 +1275,82 @@ class App:
             except IntegrationError:
                 pass
         return {"media_id": media_id, "lang": lang, "found": found, "message": msg, "had_before": had, "source": src}
+
+    def bazarr_download_candidate(self, media_id: int, result: dict) -> dict:
+        """O Bazarr descarrega a candidata escolhida e GRAVA-A ao lado do vídeo (a API dele não a devolve). Antes guarda-se o conteúdo dos ficheiros de legenda
+        existentes: se o Bazarr substituir algum, fica cópia restaurável. A seguir a app reanalisa e regista a origem."""
+        svc = self._integration("bazarr")
+        if svc is None:
+            raise ServiceError("Integração com o Bazarr desativada (Definições → Bazarr).", 400)
+        media = self.media_dict(media_id)
+        if media["kind"] != "movie" or not media.get("radarr_id"):
+            raise ServiceError("Só filmes com id do Radarr (sincronize os metadados do Radarr).", 422)
+        if result.get("provider") != "bazarr" or not result.get("via") or not result.get("file_id"):
+            raise ServiceError("Resultado inválido (não é uma candidata do Bazarr).", 422)
+        lib = self.db.one("SELECT * FROM libraries WHERE id=?", (media["library_id"],))
+        if not any(l["id"] == media["library_id"] and l["effective_write"] for l in self.libraries()):
+            raise ServiceError("A biblioteca deste filme está em modo só de leitura: não se pede ao Bazarr que escreva nela.", 403)
+        ex = result.get("extra") or {}
+        before: dict[str, bytes] = {}
+        for r in self.db.query("SELECT path FROM subtitles WHERE media_id=? AND kind='external' AND present=1 LIMIT 60", (media_id,)):
+            try:
+                if os.path.getsize(r["path"]) <= MAX_SUB_BYTES:
+                    before[r["path"]] = Path(r["path"]).read_bytes()
+            except OSError:
+                pass
+        try:
+            res = svc.download_candidate(media["radarr_id"], result["via"], result["file_id"], bool(ex.get("hi")), bool(ex.get("forced")), str(ex.get("original_format", "False")))
+        except IntegrationError as e:
+            add_event(self.db, "bazarr", f"Bazarr ({media['title']}): {e}", "warning", media_id)
+            raise ServiceError(str(e), 502)
+        if not res.get("ok"):
+            msg = f"O Bazarr não conseguiu descarregar esta legenda: {res.get('message')}"
+            add_event(self.db, "bazarr", f"Bazarr ({media['title']}): {msg}", "warning", media_id)
+            return {"media_id": media_id, "found": False, "message": msg, "source": None, "overwritten": []}
+        try:
+            self.scanner.scan_library(dict(lib), None, media["dir"], force_subs=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("reanálise após Bazarr: %s", scrub(str(e)))
+        overwritten, touched = [], set()
+        for r in self.db.query("SELECT * FROM subtitles WHERE media_id=? AND kind='external' AND present=1", (media_id,)):
+            old = before.get(r["path"])
+            try:
+                cur = Path(r["path"]).read_bytes() if os.path.getsize(r["path"]) <= MAX_SUB_BYTES else None
+            except OSError:
+                continue
+            if old is None:
+                touched.add(os.path.basename(r["path"]))
+            elif cur is not None and st.sha1(cur) != st.sha1(old):
+                touched.add(os.path.basename(r["path"]))
+                backup = self._backup_bytes(old, r["id"], r["path"])
+                self._record_edit(dict(r), "bazarr_overwrite", {"provider": result["via"]}, backup, st.sha1(old), st.sha1(cur))
+                overwritten.append(os.path.basename(r["path"]))
+        self._bazarr_attribute(media, svc, force_files=touched)
+        src = None
+        for name in touched:
+            o = self.db.one("SELECT o.* FROM sub_origins o JOIN subtitles s ON s.path=o.path WHERE s.media_id=? AND s.present=1 AND o.origin='bazarr' AND o.path LIKE ? ORDER BY o.at DESC LIMIT 1",
+                            (media_id, "%" + name.replace("%", "").replace("_", "")))
+            if o:
+                src = self._origin_view(dict(o))
+                break
+        found = bool(touched)
+        label = ex.get("provider_label") or self.PROVIDER_LABEL.get(result["via"].lower(), result["via"])
+        msg = ((f"Descarregada pelo Bazarr ({(src or {}).get('provider_label') or label}{', ' + src['detail'] if src and src.get('detail') else ''})"
+                + (f"; substituiu {', '.join(overwritten)} (cópia guardada, restaurável no histórico de alterações)" if overwritten else "") + ".")
+               if found else "O Bazarr aceitou o pedido mas não apareceu nenhuma legenda nova na pasta.")
+        add_event(self.db, "bazarr", f"Bazarr ({media['title']}): {msg}", "info" if found else "warning", media_id)
+        if found and self.settings.get("notify_plex_after_install"):
+            try:
+                self.refresh_plex(media_id)
+            except IntegrationError:
+                pass
+        return {"media_id": media_id, "found": found, "message": msg, "source": src, "overwritten": overwritten}
+
+    def _backup_bytes(self, data: bytes, sid: int, path: str) -> str:
+        self.cfg.backup_dir.mkdir(parents=True, exist_ok=True)
+        dst = self.cfg.backup_dir / f"{int(time.time())}-{sid}-{sanitize_filename(os.path.basename(path))}"
+        dst.write_bytes(data)
+        return str(dst)
 
     def start_bazarr_batch(self, media_ids: list[int], languages: list[str] | None) -> int:
         if not media_ids:

@@ -68,7 +68,7 @@ export interface SubResult {
   provider: string; file_id: string; language: string | null; release: string; file_name: string; hash_match: boolean;
   hearing_impaired: boolean; forced: boolean; fps: number | null; download_count: number | null; rating: number | null;
   from_trusted: boolean; ai_translated: boolean; machine_translated: boolean; uploader: string | null; upload_date: string | null;
-  feature_title: string | null; season: number | null; episode: number | null; page_url: string | null; found_by?: string | null; [k: string]: unknown;
+  feature_title: string | null; season: number | null; episode: number | null; page_url: string | null; found_by?: string | null; via?: string | null; extra?: { provider_label?: string; bazarr_score?: number; matches?: string[]; dont_matches?: string[] } | null; [k: string]: unknown;
 }
 export interface Candidate { result: SubResult; evaluation: Evaluation }
 export interface Download {

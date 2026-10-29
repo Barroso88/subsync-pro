@@ -289,10 +289,24 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
     else if (["failed", "cancelled", "interrupted"].includes(j.status)) { if (j.status === "failed") toast("bad", j.error || "A tradução falhou."); else toast("warn", "Tradução cancelada."); setAskTr(null); setTrJob(null); }
   }, [trJobQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
   const cancelTr = useMutation({ mutationFn: () => api.post(`/jobs/${trJob}/cancel`), onError: (e: Error) => toast("bad", e.message) });
+  const bazarrSearchOn = !!bz.data?.bazarr?.enabled && !!bz.data?.bazarr?.secret_set && d.kind === "movie" && !!d.radarr_id;
+  const [useApp, setUseApp] = useState(true);
+  const [useBazarr, setUseBazarr] = useState(true);
   const search = useMutation({
-    mutationFn: () => api.post<SearchRes>(`/media/${d.id}/search`, { languages: langs }),
+    mutationFn: () => api.post<SearchRes>(`/media/${d.id}/search`, { languages: langs, ...(bazarrSearchOn ? { sources: [...(useApp ? ["app"] : []), ...(useBazarr ? ["bazarr"] : [])] } : {}) }),
     onSuccess: setRes, onError: (e: Error) => toast("bad", e.message),
   });
+  // candidata do Bazarr: o Bazarr descarrega e grava diretamente na pasta do filme; a app valida depois
+  const bzDownload = useMutation({
+    mutationFn: (c: Candidate) => api.post<{ found: boolean; message: string }>(`/media/${d.id}/bazarr/download`, { result: c.result }),
+    onSuccess: (r) => { toast(r.found ? "ok" : "warn", r.message); setDetail(null); qc.invalidateQueries(); },
+    onError: (e: Error) => toast("bad", e.message),
+  });
+  const pickCandidate = (c: Candidate) => {
+    if (c.result.provider === "bazarr") {
+      if (window.confirm(`O Bazarr vai descarregar esta legenda (${c.result.extra?.provider_label ?? c.result.via}) e gravá-la diretamente na pasta do filme, sem pré-visualização.\n\nSe substituir um ficheiro existente, a app guarda uma cópia restaurável no histórico de alterações. Continuar?`)) bzDownload.mutate(c);
+    } else prep.mutate(c);
+  };
   const prep = useMutation({
     mutationFn: (c: Candidate) => api.post<Download>(`/media/${d.id}/prepare`, { result: c.result, language: c.result.language }),
     onSuccess: (r) => { setPrepared(r); setDetail(null); qc.invalidateQueries({ queryKey: ["downloads"] }); },
@@ -309,7 +323,14 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
               className={cx("h-6 px-2 rounded-md text-xs border", on ? "bg-accent/15 border-accent/40 text-accent" : "border-line text-dim")}>{c}</button>;
           })}
         </div>
-        <button className="btn-primary w-full" onClick={() => search.mutate()} disabled={search.isPending}>
+        {bazarrSearchOn && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+            <span className="label mr-1">Fontes</span>
+            <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={useApp} onChange={(e) => setUseApp(e.target.checked)} />App (OpenSubtitles, SubDL…)</label>
+            <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={useBazarr} onChange={(e) => setUseBazarr(e.target.checked)} />Bazarr (fornecedores dele; demora mais)</label>
+          </div>
+        )}
+        <button className="btn-primary w-full" onClick={() => search.mutate()} disabled={search.isPending || (bazarrSearchOn && !useApp && !useBazarr)}>
           {search.isPending ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}Procurar legendas
         </button>
         <div className="text-[11px] text-dim">A pesquisa usa o hash do ficheiro quando o fornecedor o suporta. Nada é descarregado nem escrito até confirmar.</div>
@@ -348,8 +369,8 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
         <div className="flex items-center gap-2 text-xs text-mute"><Languages size={14} />Traduzir para
           <select className="input !h-7 !w-auto !text-xs" value={target} onChange={(e) => setTarget(e.target.value)}>{targets.map((t) => <option key={t}>{t}</option>)}</select></div>
       )}
-      {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => prep.mutate(c)} busy={prep.isPending}
-        onTranslate={canTranslate && c.result.language !== target ? () => setAskTr(c) : undefined} />)}
+      {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => pickCandidate(c)} busy={prep.isPending || bzDownload.isPending}
+        onTranslate={canTranslate && c.result.language !== target && c.result.provider !== "bazarr" ? () => setAskTr(c) : undefined} />)}
       <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (${tr.data?.engine === "gemini" ? "Gemini" : "DeepL"})`}
         footer={trRunning ? (<><button className="btn-ghost" onClick={() => setAskTr(null)}>Fechar (continua em segundo plano)</button>
           <button className="btn-danger" disabled={cancelTr.isPending} onClick={() => cancelTr.mutate()}>Cancelar tradução</button></>) : (<><button className="btn-ghost" onClick={() => setAskTr(null)}>Cancelar</button>
@@ -371,7 +392,7 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
           </div>
         </div>
       </Modal>
-      <DetailModal c={detail} meta={meta} onClose={() => setDetail(null)} onPick={(c) => prep.mutate(c)} busy={prep.isPending} />
+      <DetailModal c={detail} meta={meta} onClose={() => setDetail(null)} onPick={(c) => pickCandidate(c)} busy={prep.isPending || bzDownload.isPending} />
       <PreviewModal dl={prepared} onClose={() => setPrepared(null)} writable={d.library_writable} onDone={() => { qc.invalidateQueries({ queryKey: ["media", d.id] }); qc.invalidateQueries(); }} />
     </div>
   );
@@ -385,7 +406,9 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
         <div className="min-w-0">
           <div className="text-sm font-medium break-all">{r.release || r.file_name || "(sem nome de release)"}</div>
           <div className="text-xs text-dim mt-0.5 flex gap-2 flex-wrap items-center">
-            <Badge tone="accent">{langName(meta, r.language)}</Badge><Badge tone="info" title="Resultado da pesquisa da própria SubSync (API oficial do fornecedor)">Fonte: App · {providerLabel(r.provider)}</Badge>
+            <Badge tone="accent">{langName(meta, r.language)}</Badge>{r.provider === "bazarr"
+              ? <Badge tone="accent" title={`Candidata da pesquisa manual do Bazarr${r.extra?.bazarr_score != null ? ` · score do Bazarr ${r.extra.bazarr_score}` : ""}${r.extra?.matches?.length ? ` · coincide: ${r.extra.matches.join(", ")}` : ""}${r.extra?.dont_matches?.length ? ` · não coincide: ${r.extra.dont_matches.join(", ")}` : ""}`}>Fonte: Bazarr · {r.extra?.provider_label ?? providerLabel(r.via)}</Badge>
+              : <Badge tone="info" title="Resultado da pesquisa da própria SubSync (API oficial do fornecedor)">Fonte: App · {providerLabel(r.provider)}</Badge>}
             {r.hearing_impaired && <Badge>SDH/HI</Badge>}{r.forced && <Badge tone="warn">Forçada</Badge>}
             {(r.ai_translated || r.machine_translated) && <Badge tone="warn">Tradução automática</Badge>}
             {r.from_trusted && <Badge tone="ok">Confiável</Badge>}
@@ -404,7 +427,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
         <button className="btn-ghost" onClick={onOpen}>Detalhes</button>
         {onTranslate && <button className="btn-ghost" disabled={busy || ev.compat === "incompatible"} onClick={onTranslate}><Languages size={14} />Traduzir</button>}
         <button className="btn-primary" disabled={busy || ev.compat === "incompatible"} onClick={onPick} title={ev.compat === "incompatible" ? "Provavelmente incompatível" : ""}>
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}Descarregar e pré-visualizar
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}{r.provider === "bazarr" ? "Descarregar via Bazarr" : "Descarregar e pré-visualizar"}
         </button>
       </div>
     </div>
@@ -416,7 +439,7 @@ function DetailModal({ c, meta, onClose, onPick, busy }: { c: Candidate | null; 
   const r = c.result;
   return (
     <Modal open onClose={onClose} title="Detalhes do resultado" wide
-      footer={<><button className="btn-ghost" onClick={onClose}>Fechar</button><button className="btn-primary" disabled={busy || c.evaluation.compat === "incompatible"} onClick={() => onPick(c)}>Descarregar e pré-visualizar</button></>}>
+      footer={<><button className="btn-ghost" onClick={onClose}>Fechar</button><button className="btn-primary" disabled={busy || c.evaluation.compat === "incompatible"} onClick={() => onPick(c)}>{c.result.provider === "bazarr" ? "Descarregar via Bazarr" : "Descarregar e pré-visualizar"}</button></>}>
       <div className="space-y-4">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           {[["Idioma", langName(meta, r.language)], ["Fornecedor", r.provider], ["Release", r.release || "—"], ["Ficheiro", r.file_name || "—"],

@@ -65,6 +65,8 @@ class SubtitleResult:
     page_url: str | None = None
     format: str | None = None
     found_by: str | None = None      # estratégia de pesquisa que o encontrou
+    via: str | None = None           # resultados do Bazarr: fornecedor do Bazarr que o tem (ex.: opensubtitlescom, legendasdivx)
+    extra: dict | None = None        # dados próprios da origem (Bazarr: parâmetros para o descarregar, score e correspondências dele)
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
