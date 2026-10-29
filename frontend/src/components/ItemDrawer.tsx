@@ -5,9 +5,8 @@ import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, S
 import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, resolution, cx } from "../lib";
 import { useLangFilter, useMeta } from "../hooks";
-import { RatingBadge } from "./MediaBrowser";
 import { Badge, Drawer, Empty, Modal, Skeleton, Tabs, useToast } from "./ui";
-import { CompatBadge, Factors, LangChips, ScoreBar, SyncBadge, langName } from "./subs";
+import { CompatBadge, Factors, LangChips, RatingBadge, ScoreBar, SyncBadge, langName } from "./subs";
 import { EditHistory, SubToolsModal } from "./SubTools";
 
 interface Detail extends Item {

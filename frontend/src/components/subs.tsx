@@ -1,7 +1,8 @@
 import { Badge } from "./ui";
+import { cx } from "../lib";
 import { useLangFilter } from "../hooks";
 import { Evaluation, Item, Meta } from "../api";
-import { Check, FileText, Layers, ShieldCheck, TriangleAlert, HelpCircle, Ban, Hash } from "lucide-react";
+import { Star, Check, FileText, Layers, ShieldCheck, TriangleAlert, HelpCircle, Ban, Hash } from "lucide-react";
 
 export function LangChips({ item, wanted }: { item: Pick<Item, "covered" | "missing"> & { fallback?: Record<string, string> }; wanted?: string[] }) {
   const lf = useLangFilter();
@@ -68,3 +69,14 @@ export function Factors({ ev }: { ev: Evaluation }) {
 }
 
 export const langName = (meta: Meta | undefined, c: string | null) => (!c ? "Desconhecido" : meta?.languages.find((l) => l.code === c)?.name ?? c);
+
+/** Nota IMDb (vinda do Radarr) em etiqueta; não mostra nada se o filme não tiver nota. */
+export function RatingBadge({ rating, votes, className }: { rating?: number | null; votes?: number | null; className?: string }) {
+  if (!rating) return null;
+  return (
+    <span className={cx("inline-flex items-center gap-1 rounded-md bg-black/75 backdrop-blur px-1.5 h-5 text-[11px] font-semibold text-white tabular-nums", className)}
+      title={`Nota IMDb ${rating.toFixed(1)}/10${votes ? ` · ${votes.toLocaleString("pt-PT")} votos` : ""}`}>
+      <Star size={10} className="text-[#f5c518] fill-[#f5c518]" />{rating.toFixed(1)}
+    </span>
+  );
+}

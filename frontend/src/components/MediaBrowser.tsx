@@ -7,6 +7,7 @@ import { useMeta, useSettings, useStartJob } from "../hooks";
 import { Badge, Checkbox, Empty, ErrorBox, Modal, Skeleton, Tabs, Toggle } from "./ui";
 import { LangChips } from "./subs";
 import { ItemDrawer } from "./ItemDrawer";
+import { RatingBadge } from "./subs";
 
 export function useDebounced<T>(v: T, ms = 220) {
   const [x, setX] = useState(v);
@@ -28,17 +29,6 @@ const STATUS = [
   { id: "", label: "Todos" }, { id: "missing", label: "Em falta" }, { id: "has", label: "Com legenda" },
   { id: "unverified", label: "Por verificar" }, { id: "suspect", label: "Possível dessincronização" },
 ] as const;
-
-/** Nota IMDb (vinda do Radarr) em etiqueta; não mostra nada se o filme não tiver nota. */
-export function RatingBadge({ rating, votes, className }: { rating?: number | null; votes?: number | null; className?: string }) {
-  if (!rating) return null;
-  return (
-    <span className={cx("inline-flex items-center gap-1 rounded-md bg-black/75 backdrop-blur px-1.5 h-5 text-[11px] font-semibold text-white tabular-nums", className)}
-      title={`Nota IMDb ${rating.toFixed(1)}/10${votes ? ` · ${votes.toLocaleString("pt-PT")} votos` : ""}`}>
-      <Star size={10} className="text-[#f5c518] fill-[#f5c518]" />{rating.toFixed(1)}
-    </span>
-  );
-}
 
 export function Poster({ item, className, showRating = false }: { item: Item; className?: string; showRating?: boolean }) {
   const [err, setErr] = useState(false);
