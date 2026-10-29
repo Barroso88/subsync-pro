@@ -63,3 +63,4 @@ def test_duplicate_that_reappears_after_being_moved_is_flagged(setup):
     g = setup.get("/api/subtitles/duplicates").json()["groups"][0]
     again = next(f for f in g["files"] if f["name"] == "Filme Teste (2024).pt.srt")
     assert g["reappeared"] == 1 and again["reappeared"] == 1                      # a app sabe que já o tinha movido e que voltou
+    assert again["keep"] is True and not any(f["keep"] for f in g["files"] if f is not again)    # e passa a propor ficar com ele (senão voltaria sempre)

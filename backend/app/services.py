@@ -1518,7 +1518,8 @@ class App:
                                    "reappeared": moved.get((d["path"], d["content_hash"]), 0), "_r": d})
         out = []
         for g in groups.values():
-            best = min(g["files"], key=lambda f: self._keep_rank(f["_r"]))
+            # um ficheiro que outra ferramenta (Bazarr…) insiste em recriar é o que deve FICAR: se for movido, volta sempre
+            best = min(g["files"], key=lambda f: (f["reappeared"] == 0, *self._keep_rank(f["_r"])))
             langs = {f["lang"] for f in g["files"] if f["lang"]}
             g["reappeared"] = sum(f["reappeared"] for f in g["files"])
             g["lang_conflict"] = len(langs) > 1          # ex.: «.pt-PT.srt» e «.pt-BR.srt» com o mesmo conteúdo: um deles está mal etiquetado

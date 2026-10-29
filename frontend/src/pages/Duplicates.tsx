@@ -71,7 +71,7 @@ export default function Duplicates() {
                 {!g.deletable && <Badge tone="neutral">só leitura</Badge>}
               </div>
               {g.reappeared > 0 && (
-                <div className="text-xs text-bad flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Este conteúdo já foi movido para backup {g.reappeared}× e <b>voltou a aparecer</b>: outra ferramenta (o Bazarr, por exemplo) está a recriá-lo. Mover outra vez não resolve; confirme o perfil de idiomas e as opções de nomes/HI no Bazarr. Veja a data de cada ficheiro abaixo.</div>
+                <div className="text-xs text-bad flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Este conteúdo já foi movido para backup {g.reappeared}× e <b>voltou a aparecer</b>: outra ferramenta (o Bazarr, por exemplo) está a recriá-lo. Por isso a app propõe <b>ficar com o ficheiro que volta</b> e mover o outro: se mover o que ele recria, volta sempre.</div>
               )}
               {g.lang_conflict && (
                 <div className="text-xs text-warn flex gap-1.5 mb-2"><AlertTriangle size={13} className="shrink-0 mt-0.5" />Os nomes indicam idiomas diferentes mas o conteúdo é igual{g.content_lang ? ` (parece ${g.content_lang})` : ""}: uma das duas está mal etiquetada e conta como legenda que não é. Fica a que corresponde ao conteúdo; confirme antes de mover. Não entra em «Resolver todos».</div>
