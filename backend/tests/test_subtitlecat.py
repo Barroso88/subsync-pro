@@ -142,3 +142,27 @@ def test_rate_limit_and_min_interval_are_applied(monkeypatch):
     pages = [x for x in seen if x[0] != "/robots.txt"]
     assert Counter.n == len(pages) >= 3                                                  # cada pedido ao site passa pelo limite por minuto das Definições
     assert len([s for s in sleeps if 3 < s <= 4.0]) >= 2                                 # e é espaçado (~4 s entre pedidos)
+
+
+def test_year_from_filename_and_plus_minus_one_year_and_no_series_rows():
+    page = """<table>
+<tr><td><a href="subs/1686/Knightfall.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-English.html">Knightfall.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-English</a> (translated from English)</td><td class="sub-table__metric"><span class="sub-table__metric-label"><img src="a" alt=""> Languages</span><span class="sub-table__metric-value">20</span></td></tr>
+<tr><td><a href="subs/1700/Knightfall.S01.html">Knightfall.S01</a> (translated from English)</td></tr>
+<tr><td><a href="subs/1701/Knightfall.2010.DVDRip.html">Knightfall.2010.DVDRip</a> (translated from English)</td></tr></table>"""
+    seen = []
+
+    def h(req):
+        seen.append((req.url.path, dict(req.url.params)))
+        if req.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if req.url.path == "/index.php":
+            return httpx.Response(200, text=page, headers={"content-type": "text/html"})
+        if req.url.path.startswith("/subs/1686/"):
+            return httpx.Response(200, text='<a id="download_pt-BR" href="/subs/1686/Knightfall.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-English-pt-BR.srt">Download</a>', headers={"content-type": "text/html"})
+        return httpx.Response(404)
+    # Radarr diz 2025, o ficheiro diz 2026 (o site também): tem de aparecer
+    res = make(h).search(SearchQuery(kind="movie", title="Knightfall", year=2025, languages=["pt-PT", "pt-BR"], file_name="Knightfall.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-CHORTLE.mkv", max_results=20))
+    assert [r.language for r in res] == ["pt-BR"] and res[0].file_id.startswith("/subs/1686/")
+    assert ("/index.php", {"search": "Knightfall 2026"}) in seen                                   # pesquisa com o ano do ficheiro
+    paths = [p for p, _ in seen]
+    assert not any("1700" in p or "1701" in p for p in paths)                                      # série (S01) e outro ano (2010): nem se abrem

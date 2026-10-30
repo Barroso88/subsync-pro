@@ -34,6 +34,8 @@ _ROW = re.compile(r'<tr>\s*<td><a href="(subs/\d+/[^"]+\.html)">(.*?)</a>(?:\s*\
 _DL = re.compile(r'<a id="download_([\w-]+)"[^>]*?href="(/subs/\d+/[^"]+\.srt)"', re.S)
 _METRIC = re.compile(r'sub-table__metric-label">\s*(?:<img[^>]*>)?\s*(Size|Downloads|Languages)</span><span class="sub-table__metric-value">([^<]*)')
 _TOK = re.compile(r"[a-z0-9]+")
+_YEAR = re.compile(r"(?<!\d)(19[5-9]\d|20[0-3]\d)(?!\d)")
+_SERIES = re.compile(r"\bs\d{1,2}(e\d{1,3})?\b", re.I)
 _NAME2CODE = {v[0].lower(): k for k, v in LANGS.items()}
 
 
@@ -140,8 +142,13 @@ class Subtitlecat(Provider):
         title = (q.series_title or q.title) if q.kind == "episode" else q.title
         if not title:
             return []
+        # o ano do NOME DO FICHEIRO manda (o do Radarr pode ser o do ano anterior: estreia vs lançamento); aceita-se também ±1 ano
+        m = _YEAR.search(q.file_name or "")
+        file_year = int(m.group(1)) if m else None
+        years_ok = {y for y in (file_year, q.year, (q.year or 0) - 1 or None, (q.year or 0) + 1 or None) if y}
+        search_year = file_year or q.year
         term = f"{title} S{q.season:02d}E{q.episode:02d}" if q.kind == "episode" and q.season is not None and q.episode is not None else \
-               (f"{title} {q.year}" if q.year and q.mode == "full" else title)
+               (f"{title} {search_year}" if search_year and q.mode == "full" else title)
         rows = self.parse_results(self._get("/index.php", search=term))
         self.ctx.record(ok=True)
         want_t = _tokens(title)
@@ -155,10 +162,12 @@ class Subtitlecat(Provider):
                     continue
             if want_t and not want_t <= toks:
                 continue                                          # o título tem de aparecer no nome
-            if q.kind == "movie" and re.search(r"\bs\d{1,2}e\d{1,3}\b", r["name"].lower()):
-                continue                                          # episódios de séries com o mesmo nome
-            if q.kind == "movie" and q.year and not (str(q.year) in toks or not re.search(r"\b(19|20)\d{2}\b", r["name"])):
-                continue                                          # nomes com outro ano ficam de fora
+            if q.kind == "movie" and _SERIES.search(r["name"]):
+                continue                                          # episódios/temporadas de séries com o mesmo nome (S01, S02E05…)
+            if q.kind == "movie" and years_ok:
+                ys = {int(y) for y in _YEAR.findall(r["name"])}
+                if ys and not ys & years_ok:
+                    continue                                      # nomes com outro ano ficam de fora (±1 ano de tolerância)
             cand.append((len(toks & ref) / max(1, len(toks | ref)), r))
         cand.sort(key=lambda x: -x[0])
         max_pages = int((self.ctx.get_config() or {}).get("max_pages", 3))
