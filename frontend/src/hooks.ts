@@ -9,7 +9,7 @@ export function useLangFilter() {
   const cfg = s.data?.display_languages ?? { hide_others: true, keep: ["pt-PT", "pt-BR", "pt"] };
   const keep: string[] = cfg.keep ?? [];
   const hide = !!cfg.hide_others;
-  const visible = (code: string | null | undefined) => !hide || (!!code && keep.includes(code)) || (keep.includes("pt") && code.startsWith("pt"));
+  const visible = (code: string | null | undefined) => !hide || (!!code && (keep.includes(code) || (keep.includes("pt") && code.startsWith("pt"))));
   return { hide, keep, visible };
 }
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => api.get<Settings>("/settings") });
