@@ -75,9 +75,10 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
       ) : (
         <><button className="btn-ghost" onClick={onClose}>Fechar</button>
           <button className="btn-ghost" disabled={!editable || preview.isPending} onClick={() => preview.mutate()}>{preview.isPending && <Loader2 size={14} className="animate-spin" />}Pré-visualizar</button>
-          <button className="btn-primary" disabled={!pv || apply.isPending || (!pv.kind && pv.dropped > 0 && pv.dropped > pv.total * 0.05)} onClick={() => apply.mutate()}>{apply.isPending && <Loader2 size={14} className="animate-spin" />}Aplicar (guarda cópia do original)</button></>
+          <button className="btn-primary" title={!pv ? "Carregue primeiro em «Pré-visualizar»: só depois se pode aplicar" : undefined} disabled={!pv || apply.isPending || (!pv.kind && pv.dropped > 0 && pv.dropped > pv.total * 0.05)} onClick={() => apply.mutate()}>{apply.isPending && <Loader2 size={14} className="animate-spin" />}Aplicar (guarda cópia do original)</button></>
       )}>
       <div className="space-y-4">
+        {sub.canEdit && !pv && tool !== "delete" && <div className="text-xs text-dim">Para ativar «Aplicar», carregue primeiro em <b className="text-mute">Pré-visualizar</b> (se disser que não há nada a alterar, não há nada para aplicar).</div>}
         {!sub.canEdit && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Esta legenda está numa biblioteca só de leitura (ou sem permissão de escrita). Ative a escrita em Definições → Bibliotecas.</div>}
         {sub.canEdit && !sub.isSrt && tool !== "convert" && tool !== "delete" && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Estas ferramentas só editam legendas SRT. Converta-a primeiro no separador «Converter».</div>}
         <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
