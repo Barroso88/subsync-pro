@@ -187,8 +187,9 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   const origins = useQuery({ queryKey: ["origins", d.id], queryFn: () => api.get<{ subtitle_id: number; origin: string; provider: string | null; provider_label: string | null; detail: string | null; at: string | null }[]>(`/media/${d.id}/origins`), staleTime: 60_000 });
   const originOf = (id: number) => origins.data?.find((o) => o.subtitle_id === id);
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? d.subtitles : d.subtitles.filter((s) => lf.visible(s.lang));
-  const hiddenN = d.subtitles.length - d.subtitles.filter((s) => lf.visible(s.lang)).length;
+  const needsTr = d.missing.length > 0;                          // falta idioma: as de origem de tradução (ex.: inglês) também aparecem
+  const shown = showAll ? d.subtitles : d.subtitles.filter((s) => lf.visible(s.lang, needsTr));
+  const hiddenN = d.subtitles.length - d.subtitles.filter((s) => lf.visible(s.lang, needsTr)).length;
   if (!d.subtitles.length) return <Empty icon={<FileText size={20} />} title="Sem legendas" hint="Não foram encontradas legendas externas nem embutidas para este vídeo." action={<div className="flex gap-2 flex-wrap justify-center"><button className="btn-primary" onClick={onSearch}><Search size={14} />Procurar online</button><UploadSubtitle d={d} /></div>} />;
   return (
     <div className="space-y-2.5">

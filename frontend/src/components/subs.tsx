@@ -7,7 +7,8 @@ import { Star, Check, FileText, Layers, ShieldCheck, TriangleAlert, HelpCircle, 
 export function LangChips({ item, wanted }: { item: Pick<Item, "covered" | "missing"> & { fallback?: Record<string, string> }; wanted?: string[] }) {
   const lf = useLangFilter();
   const all = Object.entries(item.covered);
-  const have = all.filter(([l]) => lf.visible(l) || !!item.fallback?.[l]);
+  const needsTr = item.missing.length > 0;                      // falta idioma: o inglês (origem de tradução) também aparece
+  const have = all.filter(([l]) => lf.visible(l, needsTr) || !!item.fallback?.[l]);
   const hidden = all.filter(([l]) => !have.some(([h]) => h === l)).map(([l]) => l);
   return (
     <div className="flex flex-wrap gap-1">

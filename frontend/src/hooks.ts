@@ -9,8 +9,12 @@ export function useLangFilter() {
   const cfg = s.data?.display_languages ?? { hide_others: true, keep: ["pt-PT", "pt-BR", "pt"] };
   const keep: string[] = cfg.keep ?? [];
   const hide = !!cfg.hide_others;
-  const visible = (code: string | null | undefined) => !hide || (!!code && (keep.includes(code) || (keep.includes("pt") && code.startsWith("pt"))));
-  return { hide, keep, visible };
+  const tr = s.data?.translation;
+  const trSources: string[] = tr?.enabled ? (tr.source_languages ?? ["en"]) : [];
+  /** `needsTranslation`: o item ainda tem idiomas em falta; então as legendas de origem de tradução (ex.: inglês) também se mostram. */
+  const visible = (code: string | null | undefined, needsTranslation = false) =>
+    !hide || (!!code && (keep.includes(code) || (keep.includes("pt") && code.startsWith("pt")) || (needsTranslation && trSources.includes(code))));
+  return { hide, keep, visible, trSources };
 }
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => api.get<Settings>("/settings") });
 export const useSidebar = () => useQuery({ queryKey: ["sidebar"], queryFn: () => api.get<{ missing: number; missing_by_lang: Record<string, number>; empty_subtitles: number; duplicate_subtitles: number; active_jobs: number; pending_downloads: number }>("/sidebar"), refetchInterval: 5000 });
