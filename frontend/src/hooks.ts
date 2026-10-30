@@ -3,13 +3,13 @@ import { api, Job, Meta, Settings } from "./api";
 import { useToast } from "./components/ui";
 
 export const useMeta = () => useQuery({ queryKey: ["meta"], queryFn: () => api.get<Meta>("/meta"), staleTime: 60_000 });
-/** Idiomas de legendas a mostrar (só aparência). Legendas sem idioma ficam sempre visíveis. */
+/** Idiomas de legendas a mostrar (só aparência). Com o filtro ligado, as legendas sem idioma conhecido também ficam escondidas. */
 export function useLangFilter() {
   const s = useSettings();
   const cfg = s.data?.display_languages ?? { hide_others: true, keep: ["pt-PT", "pt-BR", "pt"] };
   const keep: string[] = cfg.keep ?? [];
   const hide = !!cfg.hide_others;
-  const visible = (code: string | null | undefined) => !hide || !code || keep.includes(code) || (keep.includes("pt") && code.startsWith("pt"));
+  const visible = (code: string | null | undefined) => !hide || (!!code && keep.includes(code)) || (keep.includes("pt") && code.startsWith("pt"));
   return { hide, keep, visible };
 }
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => api.get<Settings>("/settings") });

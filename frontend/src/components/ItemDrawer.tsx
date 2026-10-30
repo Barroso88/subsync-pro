@@ -193,9 +193,9 @@ function SubsList({ d, onSearch }: { d: Detail; onSearch: () => void }) {
   return (
     <div className="space-y-2.5">
       <div className="flex justify-end items-center gap-3 flex-wrap">
-        {hiddenN > 0 && <button className="text-xs text-mute hover:text-fg underline" onClick={() => setShowAll(!showAll)}>{showAll ? "Esconder as de outros idiomas" : `Mostrar ${hiddenN} legendas noutros idiomas (escondidas)`}</button>}
+        {hiddenN > 0 && <button className="text-xs text-mute hover:text-fg underline" onClick={() => setShowAll(!showAll)}>{showAll ? "Esconder as de outros idiomas e sem idioma" : `Mostrar ${hiddenN} legendas noutros idiomas ou sem idioma (escondidas)`}</button>}
         <UploadSubtitle d={d} /></div>
-      {shown.length === 0 && <div className="text-sm text-mute card p-3.5">Todas as legendas deste filme estão noutros idiomas (escondidas). Use «Mostrar» acima ou ajuste em Definições → Idiomas.</div>}
+      {shown.length === 0 && <div className="text-sm text-mute card p-3.5">Todas as legendas deste filme estão noutros idiomas ou sem idioma conhecido (escondidas). Use «Mostrar» acima ou ajuste em Definições → Idiomas.</div>}
       {shown.map((s) => (
         <div key={s.id} className="card p-3.5 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
