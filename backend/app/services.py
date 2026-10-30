@@ -432,7 +432,7 @@ class App:
             today = date.today().isoformat()
             used = st["downloads_today"] if st and st["day"] == today else 0
             out.append({
-                "name": name, "title": cls.title, "homepage": cls.homepage, "supports_hash": cls.supports_hash,
+                "name": name, "title": cls.title, "homepage": cls.homepage, "supports_hash": cls.supports_hash, "notice": getattr(cls, "notice", None),
                 "enabled": cfg.get("enabled", False), "configured": p.configured(), "config": cfg,
                 "secrets": {k: {"set": bool(self.secrets.get(k)), "source": self.secrets.source(k)} for k in cls.secrets},
                 "downloads_today": used, "daily_limit": cfg.get("daily_download_limit"),
@@ -988,7 +988,7 @@ class App:
         return self.get_download(did)
 
     # ---- origem das legendas (app / Bazarr / enviada / traduzida) ------------------------
-    PROVIDER_LABEL = {"opensubtitles": "OpenSubtitles", "opensubtitlescom": "OpenSubtitles.com", "opensubtitlesorg": "OpenSubtitles.org", "subdl": "SubDL",
+    PROVIDER_LABEL = {"opensubtitles": "OpenSubtitles", "opensubtitlescom": "OpenSubtitles.com", "opensubtitlesorg": "OpenSubtitles.org", "subdl": "SubDL", "subtitlecat": "Subtitlecat",
                       "legendasdivx": "LegendasDivx", "legendastv": "Legendas.tv", "legendasnet": "Legendas.net", "podnapisi": "Podnapisi", "pipocas": "Pipocas.tv",
                       "addic7ed": "Addic7ed", "subscene": "Subscene", "yifysubtitles": "YIFY Subtitles", "deepl": "DeepL", "gemini": "Gemini"}
 

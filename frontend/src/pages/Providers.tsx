@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ExternalLink, KeyRound, Loader2, PlugZap, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, KeyRound, Loader2, PlugZap, XCircle, AlertTriangle } from "lucide-react";
 import { api } from "../api";
 import { fmtDate } from "../lib";
 import { Badge, ErrorBox, Field, PageHeader, Skeleton, Toggle, useToast } from "../components/ui";
 import { useSettings } from "../hooks";
 
 interface P {
-  name: string; title: string; homepage: string; supports_hash: boolean; enabled: boolean; configured: boolean;
+  name: string; title: string; homepage: string; notice?: string | null; supports_hash: boolean; enabled: boolean; configured: boolean;
   config: Record<string, any>; secrets: Record<string, { set: boolean; source: string }>; downloads_today: number; daily_limit: number | null;
   remaining_quota: number | null; quota_reset: string | null; last_ok_at: string | null; last_error: string | null; auth_ok: boolean | null;
 }
@@ -54,6 +54,7 @@ function ProviderCard({ p }: { p: P }) {
             {p.supports_hash && <Badge tone="info">Pesquisa por hash</Badge>}
           </div>
           <a className="text-xs text-info hover:underline inline-flex items-center gap-1 mt-1" href={p.homepage} target="_blank" rel="noreferrer noopener">{p.homepage}<ExternalLink size={11} /></a>
+          {p.notice && <div className="text-xs text-warn mt-1.5 max-w-2xl flex gap-1.5"><AlertTriangle size={13} className="shrink-0 mt-0.5" /><span>{p.notice}</span></div>}
         </div>
         <Toggle checked={!!cfg.enabled} onChange={(v) => setCfg({ ...cfg, enabled: v })} label="Ativo" />
       </div>

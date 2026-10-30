@@ -30,6 +30,8 @@ DEFAULTS: dict[str, Any] = {
                           "requests_per_minute": 30, "daily_download_limit": 20},
         "subdl": {"enabled": False, "priority": 2, "max_results": 30,
                   "requests_per_minute": 20, "daily_download_limit": 50},
+        "subtitlecat": {"enabled": False, "priority": 3, "max_results": 20, "max_pages": 3,        # sem API: lê o site, ritmo baixo (ver providers/subtitlecat.py)
+                        "requests_per_minute": 10, "daily_download_limit": 30},
     },
     "generic_pt_variant": "",          # "" = «pt» sem variante não conta | "pt-PT" | "pt-BR": variante assumida para «pt» genérico (assinalada ≈pt)
     "embedded_variant_scan": False,    # LENTO: abre os vídeos (ffmpeg) para estimar pt-PT/pt-BR de faixas embutidas «pt». Só se ativado.
