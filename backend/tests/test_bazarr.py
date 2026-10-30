@@ -215,3 +215,43 @@ def test_download_candidate_via_bazarr_records_origin_and_backs_up_overwritten_f
     core.transport = httpx.MockTransport(lambda req: httpx.Response(500, json={"message": "falhou"}))
     r = core.bazarr_download_candidate(mv["id"], cand)
     assert r["found"] is False and "falhou" in r["message"]
+
+
+def test_request_waits_for_bazarr_background_download_before_rescanning(ready, monkeypatch):
+    from app.services import App
+    core, mv, root = ready
+    monkeypatch.setattr(App, "BAZARR_WAIT", 5.0)
+    monkeypatch.setattr(App, "BAZARR_POLL", 0.01)
+    d = root / "Filmes" / "Filme Teste (2024)"
+    state = {"patched": False, "polls": 0}
+
+    def h(req: httpx.Request):
+        if req.method == "PATCH":
+            state["patched"] = True
+            return httpx.Response(204)                                       # responde logo; o trabalho fica para depois
+        if req.url.path == "/api/movies/history":
+            if state["patched"]:
+                state["polls"] += 1
+                if state["polls"] >= 3:                                      # só à 3.ª pergunta o Bazarr já registou o download…
+                    (d / "Filme Teste (2024).pt-PT.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")   # …e gravou o ficheiro
+                    return httpx.Response(200, json={"data": [{"radarrId": 7111, "provider": "legendasdivx", "score": "88%", "parsed_timestamp": "t1",
+                                                               "subtitles_path": "/m/Filme Teste (2024).pt-PT.srt"}]})
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404)
+    core.transport = httpx.MockTransport(h)
+    r = core.bazarr_request(mv["id"], "pt-PT")
+    assert r["found"] is True and state["polls"] >= 3 and "Bazarr · LegendasDivx" in r["message"]              # esperou em vez de dizer «nada»
+
+
+def test_request_messages_when_bazarr_registers_nothing_or_language_already_covered(ready, monkeypatch):
+    from app.services import App
+    core, mv, root = ready
+    monkeypatch.setattr(App, "BAZARR_WAIT", 0.05)
+    monkeypatch.setattr(App, "BAZARR_POLL", 0.01)
+    core.transport = httpx.MockTransport(lambda r: httpx.Response(204) if r.method == "PATCH" else httpx.Response(200, json={"data": []}))
+    r = core.bazarr_request(mv["id"], "pt-PT")
+    assert r["found"] is False and "não registou nenhum download" in r["message"] and "Reanalisar" in r["message"]
+    (root / "Filmes" / "Filme Teste (2024)" / "Filme Teste (2024).pt-PT.srt").write_text(make_srt(60, lang="pt-PT"), "utf-8")
+    core.scanner.scan_library(dict(core.db.one("SELECT * FROM libraries WHERE id=?", (mv["library_id"],))), None, mv["dir"])
+    r = core.bazarr_request(mv["id"], "pt-PT")
+    assert r["found"] is False and "Já tinha pt-PT" in r["message"]                                          # já coberto: mensagem clara

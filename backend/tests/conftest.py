@@ -108,3 +108,5 @@ def _no_gemini_pacing(monkeypatch):
     Gemini._SHARED.clear()           # o ritmo aprendido é partilhado entre instâncias: cada teste começa limpo
     Gemini._AUTO.clear()
     Gemini._EXHAUSTED.clear()
+    from app.services import App
+    monkeypatch.setattr(App, "BAZARR_WAIT", 0.0)           # os testes não esperam pelo Bazarr

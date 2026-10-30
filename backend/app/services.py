@@ -1238,6 +1238,13 @@ class App:
         return res
 
     # ---- Bazarr: pedir-lhe que procure/descarregue (inclui os fornecedores dele, ex.: LegendasDivx) ----
+    BAZARR_WAIT = 45.0      # segundos a esperar que o Bazarr registe o download (a API devolve logo e ele trabalha em segundo plano)
+    BAZARR_POLL = 3.0
+
+    @staticmethod
+    def _hist_keys(entries: list[dict]) -> set[tuple]:
+        return {(e["file"], e["provider"], e.get("at"), e.get("score")) for e in entries}
+
     def bazarr_request(self, media_id: int, lang: str) -> dict:
         svc = self._integration("bazarr")
         if svc is None:
@@ -1250,10 +1257,28 @@ class App:
             raise ServiceError("A biblioteca deste filme está em modo só de leitura: não se pede ao Bazarr que escreva nela.", 403)
         had = lang in cov.compute(self.db, self.settings, [media_id])[media_id]["covered"]
         try:
+            before = self._hist_keys(svc.movie_history(media["radarr_id"]))
+        except IntegrationError:
+            before = None
+        try:
             r = svc.download_movie_subtitle(media["radarr_id"], lang)
         except IntegrationError as e:
             add_event(self.db, "bazarr", f"Bazarr ({media['title']}, {lang}): {e}", "warning", media_id)
             raise ServiceError(str(e), 502)
+        registered = None
+        if r.get("ok") and before is not None:
+            # o Bazarr responde logo (204) e descarrega em segundo plano: espera que apareça um download novo no histórico dele antes de reanalisar
+            deadline = time.monotonic() + self.BAZARR_WAIT
+            while True:
+                try:
+                    registered = self._hist_keys(svc.movie_history(media["radarr_id"])) - before
+                except IntegrationError:
+                    break
+                if registered or time.monotonic() >= deadline:
+                    break
+                time.sleep(self.BAZARR_POLL)
+            if registered:
+                time.sleep(min(2.0, self.BAZARR_WAIT))                # deixa o Bazarr acabar de gravar o ficheiro
         try:  # a app valida o resultado: reanalisa só a pasta do filme
             self.scanner.scan_library(dict(lib), None, media["dir"])
         except Exception as e:  # noqa: BLE001
@@ -1266,8 +1291,19 @@ class App:
             newest = self.db.one("SELECT o.* FROM sub_origins o JOIN subtitles s ON s.path=o.path WHERE o.media_id=? AND o.origin='bazarr' AND s.present=1 "
                                  "ORDER BY o.at DESC LIMIT 1", (media_id,))
             src = self._origin_view(dict(newest)) if newest else None
-        msg = (("Legenda encontrada e validada" + (f" (Bazarr · {src['provider_label']}{', ' + src['detail'] if src['detail'] else ''})" if src else "") + ".") if found else
-               "O Bazarr não obteve nenhuma legenda nova." if r.get("ok") else f"O Bazarr não encontrou: {r.get('message')}")
+        if found:
+            msg = "Legenda encontrada e validada" + (f" (Bazarr · {src['provider_label']}{', ' + src['detail'] if src['detail'] else ''})" if src else "") + "."
+        elif not r.get("ok"):
+            msg = f"O Bazarr não encontrou: {r.get('message')}"
+        elif had:
+            msg = f"Já tinha {lang}; o Bazarr não trouxe nenhuma legenda diferente."
+        elif registered:
+            msg = "O Bazarr descarregou uma legenda mas não é do idioma pedido ou a app ainda não a reconheceu: veja a lista de legendas do filme."
+        elif before is not None:
+            msg = (f"O Bazarr aceitou o pedido mas não registou nenhum download em {int(self.BAZARR_WAIT)} s (pode não ter encontrado legenda, ou ainda estar a "
+                   "trabalhar: use «Reanalisar» daqui a pouco).")
+        else:
+            msg = "O Bazarr não obteve nenhuma legenda nova."
         add_event(self.db, "bazarr", f"Bazarr ({media['title']}, {lang}): {msg}", "info" if found else "warning", media_id)
         if self.settings.get("notify_plex_after_install") and found:
             try:
