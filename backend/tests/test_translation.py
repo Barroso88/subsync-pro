@@ -544,3 +544,22 @@ def test_gemini_keys_status_via_api(cfg, fake_probe, media_root):
         Gemini._EXHAUSTED["KEY_B"] = time.time() + 3600
         st = c.get("/api/translation").json()
         assert st["gemini_keys"][1]["exhausted_until"] and st["gemini_keys"][0]["exhausted_until"] is None
+
+
+def test_french_source_is_searched_and_translates_to_both_portuguese_variants(client):
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en", "fr"]}})
+    q = client.core.build_query(client.core.media_dict(e2(client)["id"]))
+    assert "fr" in q.languages and "en" in q.languages                                    # o francês entra na pesquisa como origem de tradução
+    from app.translation import DeepL, Gemini, SOURCES, TARGETS, LANG_NAMES, SRC_NAMES
+    assert SOURCES["fr"] == "FR" and TARGETS["pt-PT"] == "PT-PT" and TARGETS["pt-BR"] == "PT-BR"      # DeepL: FR → PT-PT / PT-BR
+    assert SRC_NAMES["fr"] == "French" and "pt-PT" in LANG_NAMES and "pt-BR" in LANG_NAMES            # Gemini: French → pt-PT / pt-BR
+    seen = []
+
+    def h(req: httpx.Request):
+        body = json.loads(req.content)
+        seen.append((body["source_lang"], body["target_lang"]))
+        return httpx.Response(200, json={"translations": [{"text": "PT:" + t} for t in body["text"]]})
+    d = DeepL("KEY:fx", httpx.MockTransport(h))
+    assert d.translate(["Bonjour, comment ça va ?"], "pt-PT", "fr") == ["PT:Bonjour, comment ça va ?"] and seen == [("FR", "PT-PT")]
+    d.translate(["Salut"], "pt-BR", "fr")
+    assert seen[-1] == ("FR", "PT-BR")

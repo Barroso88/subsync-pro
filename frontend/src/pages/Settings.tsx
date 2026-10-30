@@ -67,7 +67,15 @@ export default function SettingsPage() {
               </select></Field>
             <Toggle checked={!!d.accept_pt_br_fallback} onChange={(v) => set("accept_pt_br_fallback", v)} label="Aceitar pt-BR quando faltar pt-PT" hint="Pesquisa também pt-BR; uma legenda pt-BR conta como cobertura de pt-PT (assinalada) e é guardada como .pt-BR.srt, nunca renomeada. Em lote, pt-PT tem sempre prioridade." />
             <Toggle checked={!!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, enabled: v })} label="Permitir tradução automática (DeepL ou Gemini)" hint="Mostra «Traduzir» nos resultados noutros idiomas. Escolha o motor e coloque a chave em Fornecedores. O texto é enviado ao serviço escolhido." />
-            <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de inglês se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome a quota do motor de tradução." />
+            <Field label="Idiomas de origem para traduzir" hint="Legendas nestes idiomas entram na pesquisa, aparecem quando ao filme falta um idioma e servem de origem no lote automático. Funciona para qualquer par suportado pelo motor (ex.: francês → pt-PT). As faixas embutidas de qualquer idioma de texto podem sempre traduzir-se à mão.">
+              <div className="flex flex-wrap gap-1.5">{["en", "fr", "es", "de", "it", "nl"].map((c) => {
+                const cur: string[] = d.translation?.source_languages ?? ["en"];
+                const on = cur.includes(c);
+                return <button key={c} type="button" disabled={!d.translation?.enabled}
+                  onClick={() => set("translation", { ...d.translation, source_languages: on ? cur.filter((x) => x !== c) : [...cur, c] })}
+                  className={`h-6 px-2 rounded-md text-xs border ${on ? "bg-accent/15 border-accent/40 text-accent" : "border-line text-dim"} disabled:opacity-40`} title={meta.data?.languages.find((l) => l.code === c)?.name ?? c}>{c}</button>;
+              })}</div></Field>
+            <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de um idioma de origem se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome a quota do motor de tradução." />
             <Toggle checked={d.prefer_forced} onChange={(v) => set("prefer_forced", v)} label="Incluir legendas forçadas nas pesquisas" />
             <Field label="Idiomas a mostrar nas legendas" hint="Só aparência: esconde os chips e as listas de legendas noutros idiomas (não apaga nada nem muda a cobertura). Inclui as legendas de idioma desconhecido (comuns em faixas embutidas sem etiqueta). Com a tradução ativada, o inglês (idioma de origem) aparece sempre que ao filme falte um idioma.">
               <div className="space-y-2">
