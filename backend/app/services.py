@@ -1654,6 +1654,7 @@ class App:
             if ctx.total == 0:
                 ctx.set_total(total + 1)
             ctx.step(msg, inc=1 if i > 0 else 0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
+        au.PROBE_BIN = self.cfg.ffprobe_bin
         try:
             res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog)
         except au.AudioSyncError as e:

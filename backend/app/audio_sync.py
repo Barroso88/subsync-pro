@@ -1,17 +1,22 @@
 """Alinhamento de uma legenda com a FALA do áudio do vídeo (opcional, só a pedido do utilizador).
 
 Como funciona (a ideia do ffsubsync, sem modelos pesados):
-1. Escolhem-se algumas janelas espalhadas pelo filme (por omissão 8 de 3 minutos) e o ffmpeg extrai só o áudio dessas janelas (mono, 8 kHz).
-2. Um detetor de atividade de voz simples (energia por frames de 20 ms, limiar adaptativo, suavização) diz quando «há som de fala/ruído forte».
-3. Para cada janela, compara-se esse sinal com os instantes em que a legenda mostra texto (correlação cruzada em ±150 s) e obtém-se o desvio daquela janela.
-4. As janelas têm de CONCORDAR (offset constante ou deriva linear, ex.: 23,976 ↔ 25 fps). Se não concordarem, o resultado é «inconclusivo»: não se
-   afirma nada. A confiança que se mostra é a fração de janelas que concordam, e não uma probabilidade calibrada.
+1. Escolhem-se janelas espalhadas pelo filme (10 de 4 minutos) e o ffmpeg extrai só o áudio dessas janelas: mono, 8 kHz, **canal central** quando o
+   áudio é 5.1/7.1 (é onde está o diálogo) e filtrado para a banda da voz (150–4000 Hz).
+2. Um detetor de atividade de voz simples converte a energia por frames de 20 ms num sinal contínuo 0–1 (limiar adaptativo ao próprio áudio, normalizado
+   localmente para que cenas ruidosas não dominem).
+3. Cada janela é comparada com os instantes em que a legenda mostra texto (correlação cruzada em ±150 s). As curvas de todas as janelas SOMAM-SE: um
+   desvio verdadeiro reforça-se de janela em janela, ao passo que picos ao acaso não. Só se conclui se o pico somado for forte E várias janelas, cada
+   uma por si, apoiarem esse desvio.
+4. Resultado: offset constante, deriva linear (ex.: 23,976 ↔ 25 fps; testam-se as razões de frame rate habituais) ou «inconclusivo» (sem adivinhar). A
+   confiança que se mostra é a fração de janelas que apoiam, e não uma probabilidade calibrada.
 
 Limites honestos: a energia não distingue fala de música ou efeitos; dobragens e vídeos com muita música podem enganar; legendas forçadas (só partes
 estrangeiras) ou de outro corte do filme não alinham. Por isso nunca se aplica nada sem pré-visualização e confirmação.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Callable
 
@@ -20,11 +25,15 @@ import numpy as np
 SR = 8000                      # Hz do áudio extraído
 FRAME = SR // 50               # frames de 20 ms → 50 por segundo
 RES = 50
-SEARCH_S = 150                 # ±150 s de procura de desvio por janela
-WINDOW_S = 180                 # duração de cada janela
-N_WINDOWS = 8
-Z_MIN = 6.0                    # pico mínimo (em desvios-padrão da correlação) para uma janela contar
-AGREE_TOL_S = 0.7              # tolerância para duas janelas «concordarem»
+SEARCH_S = 150                 # ±150 s de procura de desvio
+WINDOW_S = 240                 # duração de cada janela
+N_WINDOWS = 10
+ZT_MIN = 7.0                   # pico da soma das curvas (em desvios-padrão) para aceitar um desvio
+SUPPORT_Z = 3.0                # uma janela «apoia» o desvio se a sua curva, nesse ponto, tiver pelo menos este z
+LOCAL_S = 4.0                  # a janela só procura o seu pico a ±4 s do pico global (permite deriva pequena)
+AGREE_TOL_S = 0.8
+PROBE_BIN = "ffprobe"
+_FILTER_CACHE: dict[str, str] = {}
 
 
 class AudioSyncError(Exception):
@@ -33,10 +42,29 @@ class AudioSyncError(Exception):
 
 # ---- áudio → atividade ------------------------------------------------------------
 
+def audio_filter(path: str) -> str:
+    """Filtro do ffmpeg: canal central se existir (5.1/7.1), senão mistura mono; e banda da voz."""
+    if path in _FILTER_CACHE:
+        return _FILTER_CACHE[path]
+    band = "highpass=f=150,lowpass=f=4000"
+    pan = ""
+    try:
+        cp = subprocess.run([PROBE_BIN, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,channel_layout", "-of", "csv=p=0", path],
+                            capture_output=True, timeout=30, check=False)
+        layout = cp.stdout.decode("utf-8", "ignore").strip().split(",") if cp.returncode == 0 else []
+        chans = int(layout[0]) if layout and layout[0].strip().isdigit() else 0
+        if chans >= 5 or (len(layout) >= 2 and re.match(r"^(3\.|5\.|6\.|7\.|8\.)", layout[1].strip())):
+            pan = "pan=mono|c0=FC,"                           # o diálogo vive no canal central (5.1/7.1; sem layout declarado assume-se o habitual)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _FILTER_CACHE[path] = pan + band
+    return _FILTER_CACHE[path]
+
+
 def extract_window(path: str, start: float, dur: float, ffmpeg_bin: str = "ffmpeg", timeout: int = 180) -> np.ndarray | None:
     """Áudio mono 8 kHz s16 de [start, start+dur). Só leitura; sem shell; None se falhar."""
     cmd = [ffmpeg_bin, "-v", "error", "-nostdin", "-ss", f"{max(0.0, start):.2f}", "-t", f"{dur:.2f}", "-i", path, "-map", "0:a:0", "-vn",
-           "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
+           "-af", audio_filter(path), "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
     try:
         cp = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -46,29 +74,29 @@ def extract_window(path: str, start: float, dur: float, ffmpeg_bin: str = "ffmpe
     return np.frombuffer(cp.stdout, dtype=np.int16)
 
 
-def _smooth(act: np.ndarray, close: int = 8, open_: int = 3) -> np.ndarray:
-    """Fecha buracos curtos (<160 ms) e remove picos curtos (<60 ms)."""
-    k = np.ones(close, dtype=np.float32)
-    dil = np.convolve(act.astype(np.float32), k, "same") > 0
-    ero = np.convolve(dil.astype(np.float32), k, "same") >= close
-    closed = ero | act
-    k2 = np.ones(open_, dtype=np.float32)
-    ero2 = np.convolve(closed.astype(np.float32), k2, "same") >= open_
-    return np.convolve(ero2.astype(np.float32), k2, "same") > 0
+def _movavg(x: np.ndarray, k: int) -> np.ndarray:
+    k = max(1, k)
+    c = np.cumsum(np.insert(x.astype(np.float64), 0, 0.0))
+    half = k // 2
+    idx = np.arange(len(x))
+    lo, hi = np.clip(idx - half, 0, len(x)), np.clip(idx + half + 1, 0, len(x))
+    return ((c[hi] - c[lo]) / np.maximum(1, hi - lo)).astype(np.float32)
 
 
-def speech_activity(samples: np.ndarray) -> np.ndarray:
-    """1 por frame de 20 ms com som forte (fala), 0 caso contrário. Limiar adaptativo ao próprio áudio; sem dinâmica suficiente → tudo 0."""
+def speech_envelope(samples: np.ndarray) -> tuple[np.ndarray, float]:
+    """(envolvente de «fala» por frame de 20 ms, % de frames com som forte). Contínua em 0–1 e normalizada localmente (subtrai a média de ±5 s)."""
     n = len(samples) // FRAME
     if n < RES * 10:
-        return np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.float32), 0.0
     x = samples[: n * FRAME].reshape(n, FRAME).astype(np.float32)
     db = 10.0 * np.log10(np.mean(x * x, axis=1) + 1.0)
     floor, peak = np.percentile(db, 15), np.percentile(db, 92)
-    if peak - floor < 6.0:
-        return np.zeros(n, dtype=np.float32)
-    act = db > floor + 0.4 * (peak - floor)
-    return _smooth(act).astype(np.float32)
+    if peak - floor < 2.5:
+        return np.zeros(n, dtype=np.float32), 0.0
+    env = np.clip((db - floor) / (peak - floor), 0.0, 1.2)
+    env = _movavg(env, 5)
+    pct = float(np.mean(db > floor + 0.4 * (peak - floor)))
+    return (env - _movavg(env, 5 * RES)).astype(np.float32), pct
 
 
 def subtitle_activity(cues: list[tuple[int, int]], t0: float, t1: float) -> np.ndarray:
@@ -86,27 +114,20 @@ def subtitle_activity(cues: list[tuple[int, int]], t0: float, t1: float) -> np.n
 
 # ---- correlação por janela ---------------------------------------------------------
 
-def window_offset(audio_act: np.ndarray, cues: list[tuple[int, int]], t0: float) -> tuple[float, float] | None:
-    """(desvio em segundos a SOMAR à legenda, z) para uma janela que começa em t0. None se não houver sinal utilizável."""
-    if len(audio_act) < RES * 20 or audio_act.sum() < RES * 5:
+def window_curve(env: np.ndarray, cues: list[tuple[int, int]], t0: float) -> np.ndarray | None:
+    """Curva de correlação normalizada (z) para os desvios k ∈ [−SEARCH, +SEARCH] (em frames; índice k+SEARCH·RES). None se a janela não tiver sinal útil."""
+    if len(env) < RES * 20 or float(np.abs(env).sum()) < 1.0:
         return None
-    L = len(audio_act) / RES
+    L = len(env) / RES
     s = subtitle_activity(cues, t0 - SEARCH_S, t0 + L + SEARCH_S)
-    if s[SEARCH_S * RES: SEARCH_S * RES + len(audio_act)].sum() < RES * 3 and s.sum() < RES * 10:
+    if s[SEARCH_S * RES: SEARCH_S * RES + len(env)].sum() < RES * 3:
         return None                                              # quase sem falas nesta zona
-    a = audio_act - audio_act.mean()
-    sm = s - s.mean()
-    corr = np.correlate(sm, a, "valid")                          # corr[k] = Σ a[n]·s[n+k], k ∈ [0, 2·SEARCH]
+    corr = np.correlate(s - s.mean(), env, "valid")              # corr[i] = Σ env[n]·s[n+i], i ∈ [0, 2·SEARCH·RES]
     sd = corr.std()
-    if sd < 1e-6:
+    if sd < 1e-9:
         return None
-    k = int(np.argmax(corr))
-    z = float((corr[k] - corr.mean()) / sd)
-    lag = (k - SEARCH_S * RES) / RES                             # legenda atrasada `lag` s face ao áudio
-    return -lag, z
+    return ((corr - corr.mean()) / sd).astype(np.float32)
 
-
-# ---- agregação robusta -------------------------------------------------------------
 
 def _theil_sen(ts: list[float], ys: list[float]) -> tuple[float, float]:
     slopes = [(ys[j] - ys[i]) / (ts[j] - ts[i]) for i in range(len(ts)) for j in range(i + 1, len(ts)) if abs(ts[j] - ts[i]) > 60]
@@ -115,55 +136,58 @@ def _theil_sen(ts: list[float], ys: list[float]) -> tuple[float, float]:
     return a, b
 
 
-def combine(wins: list[dict], duration: float) -> dict:
-    """Decide entre: já alinhada, offset constante, deriva linear ou inconclusivo. `wins`: {t, offset, z}."""
-    total = len(wins)
-    good = [w for w in wins if w["offset"] is not None and w["z"] >= Z_MIN]
-    out = {"windows_total": total, "windows_clear": len(good), "mode": "inconclusive", "agree": 0, "confidence": 0.0, "offset_s": 0.0, "scale": 1.0, "drift_s_per_hour": 0.0}
-    for w in wins:
-        w["used"] = False
-    if len(good) < 3:
-        out["reason"] = "Poucas janelas com fala clara (música, silêncio ou legenda sem falas nessas zonas): não é possível concluir."
+def decide(curves: list[np.ndarray | None], centers: list[float], duration: float, speech: list[float]) -> dict:
+    """Junta as curvas das janelas e decide: aligned | offset | linear | inconclusive (com justificação)."""
+    total = len(curves)
+    wins = [{"t": t, "offset": None, "z": 0.0, "used": False, "speech_pct": round(sp * 100)} for t, sp in zip(centers, speech)]
+    out = {"windows_total": total, "windows_clear": 0, "mode": "inconclusive", "agree": 0, "confidence": 0.0, "offset_s": 0.0, "scale": 1.0,
+           "drift_s_per_hour": 0.0, "z_total": 0.0, "windows": wins}
+    valid = [(i, c) for i, c in enumerate(curves) if c is not None]
+    out["windows_clear"] = len(valid)
+    if len(valid) < 3:
+        out["reason"] = ("Poucas janelas com sinal utilizável (silêncio, áudio sem dinâmica ou legenda sem falas nessas zonas). "
+                         "Veja a coluna «Fala» da tabela: valores muito baixos indicam que o áudio lido não tem diálogo detetável.")
         return out
-    offs = sorted(w["offset"] for w in good)
-    # offset constante: o maior grupo de janelas dentro de AGREE_TOL_S
-    best_n, best_med = 0, 0.0
-    for i, o in enumerate(offs):
-        grp = [x for x in offs if abs(x - o) <= AGREE_TOL_S]
-        if len(grp) > best_n:
-            best_n, best_med = len(grp), float(np.median(grp))
-    const_in = [w for w in good if abs(w["offset"] - best_med) <= AGREE_TOL_S]
-    # deriva linear (Theil–Sen) sobre as janelas claras
-    ts, ys = [w["t"] for w in good], [w["offset"] for w in good]
-    a, b = _theil_sen(ts, ys)
-    lin_in = [w for w in good if abs(w["offset"] - (a + b * w["t"])) <= AGREE_TOL_S]
-    drift_total = b * duration
-    need = max(3, int(np.ceil(0.6 * len(good))))
-    use_linear = len(lin_in) >= max(4, need) and len(lin_in) >= len(const_in) + 2 and abs(drift_total) >= 1.5 and 0.9 <= 1 + b <= 1.1
-    if use_linear:
-        chosen = lin_in
-        out.update(mode="linear", offset_s=round(a, 3), scale=round(1 + b, 8), drift_s_per_hour=round(b * 3600, 2))
-    elif len(const_in) >= need:
-        chosen = const_in
-        out.update(mode="offset", offset_s=round(best_med, 3))
-    else:
-        out["reason"] = ("As janelas não concordam entre si (desvios diferentes ao longo do filme): pode ser outro corte/versão do filme, uma legenda forçada, "
-                         "áudio dobrado ou muita música. Não se conclui nada.")
+    C = np.sum([c for _, c in valid], axis=0)
+    zt = float((C.max() - C.mean()) / (C.std() + 1e-9))
+    k = int(np.argmax(C))
+    out["z_total"] = round(zt, 1)
+    loc = int(LOCAL_S * RES)
+    lo, hi = max(0, k - loc), min(len(C), k + loc + 1)
+    support = []
+    for i, c in valid:
+        seg = c[lo:hi]
+        kw = lo + int(np.argmax(seg))
+        wins[i]["offset"] = round(-((kw - SEARCH_S * RES) / RES), 2)
+        wins[i]["z"] = round(float(c[kw]), 1)
+        if c[kw] >= SUPPORT_Z:
+            support.append(i)
+    need = max(3, int(np.ceil(0.4 * total)))
+    if zt < ZT_MIN:
+        out["reason"] = (f"Nenhum desvio se destaca (pico somado {zt:.1f}, são precisos {ZT_MIN:.0f}): o áudio pode ter pouco diálogo, ou a legenda é de outro corte/versão, "
+                         "forçada, de outra língua falada ou muito diferente do filme.")
         return out
-    for w in chosen:
-        w["used"] = True
-    out["agree"] = len(chosen)
-    out["confidence"] = round(len(chosen) / total, 2)
-    if out["confidence"] < 0.4:
-        out.update(mode="inconclusive", reason="Menos de 40 % das janelas concordam: resultado pouco fiável, não se conclui nada.")
-        for w in wins:
-            w["used"] = False
+    if len(support) < need:
+        out["reason"] = f"O desvio mais forte só é apoiado por {len(support)} de {total} janelas (mínimo {need}): não se conclui nada."
         return out
-    resid = [abs(w["offset"] - (out["offset_s"] + (out["scale"] - 1) * w["t"])) for w in chosen]
+    offs = [wins[i]["offset"] for i in support]
+    ts = [wins[i]["t"] for i in support]
+    const = float(np.median(offs))
+    mode, a, b = "offset", const, 0.0
+    if len(support) >= 4:
+        a2, b2 = _theil_sen(ts, offs)
+        inl = [i for i in support if abs(wins[i]["offset"] - (a2 + b2 * wins[i]["t"])) <= AGREE_TOL_S]
+        const_in = [i for i in support if abs(wins[i]["offset"] - const) <= AGREE_TOL_S]
+        if len(inl) >= max(4, int(np.ceil(0.6 * len(support)))) and len(inl) >= len(const_in) + 2 and abs(b2 * duration) >= 1.5 and 0.9 <= 1 + b2 <= 1.1:
+            mode, a, b, support = "linear", a2, b2, inl
+    for i in support:
+        wins[i]["used"] = True
+    out.update(mode=mode, agree=len(support), confidence=round(len(support) / total, 2), offset_s=round(a, 3), scale=round(1 + b, 8), drift_s_per_hour=round(b * 3600, 2))
+    resid = [abs(wins[i]["offset"] - (a + b * wins[i]["t"])) for i in support]
     out["residual_s"] = round(float(np.median(resid)), 2)
-    if out["mode"] == "offset" and abs(out["offset_s"]) < 0.4:
-        out["mode"] = "aligned"                                   # já está alinhada com a fala
-    elif out["mode"] == "linear" and abs(out["offset_s"]) < 0.4 and abs(drift_total) < 1.0:
+    if mode == "offset" and abs(a) < 0.4:
+        out["mode"] = "aligned"
+    elif mode == "linear" and abs(a) < 0.4 and abs(b * duration) < 1.0:
         out["mode"] = "aligned"
     return out
 
@@ -183,13 +207,13 @@ RATIOS = (1.0, 25 / 23.976, 23.976 / 25, 25 / 24, 24 / 25)     # diferenças de 
 
 def analyze(path: str, cues: list[tuple[int, int]], duration: float, ffmpeg_bin: str = "ffmpeg",
             progress: Callable[[int, int, str], None] | None = None, extract: Callable | None = None) -> dict:
-    """Corre as janelas e devolve o resultado de `combine` (+ janelas). Lança AudioSyncError se não for possível ler o áudio.
+    """Corre as janelas e devolve o resultado de `decide`. Lança AudioSyncError se não for possível ler o áudio.
     Resultado final: t_novo = scale · t + offset_s (em segundos); `mode`: aligned | offset | linear | inconclusive."""
     extract = extract or extract_window
     if not cues:
         raise AudioSyncError("A legenda não tem falas.")
     starts = window_starts(duration)
-    acts: list[tuple[float, np.ndarray, float]] = []
+    envs: list[tuple[float, np.ndarray, float, float]] = []
     failed = 0
     for i, t0 in enumerate(starts):
         if progress:
@@ -198,25 +222,23 @@ def analyze(path: str, cues: list[tuple[int, int]], duration: float, ffmpeg_bin:
         if samples is None:
             failed += 1
             continue
-        acts.append((t0, speech_activity(samples), len(samples) / SR))
+        env, pct = speech_envelope(samples)
+        envs.append((t0, env, len(samples) / SR, pct))
     if progress:
         progress(len(starts), len(starts), "A comparar com a legenda…")
-    if not acts:
+    if not envs:
         raise AudioSyncError("Não foi possível extrair o áudio do vídeo (ffmpeg falhou, ficheiro inacessível ou sem faixa de áudio).")
+    centers = [round(t0 + length / 2, 1) for t0, _, length, _ in envs]
+    speech = [pct for _, _, _, pct in envs]
     best = None
     for r in RATIOS:
         cr = [(int(s * r), int(e * r)) for s, e in cues] if r != 1.0 else cues
-        wins = []
-        for t0, act, length in acts:
-            res = window_offset(act, cr, t0)
-            wins.append({"t": round(t0 + length / 2, 1), "offset": None if res is None else round(res[0], 2), "z": 0.0 if res is None else round(res[1], 1)})
-        out = combine(wins, duration)
-        out["ratio"], out["windows"] = r, wins
-        key = (out["mode"] != "inconclusive", out["agree"])
-        if best is None or key > (best["mode"] != "inconclusive", best["agree"]):
+        out = decide([window_curve(env, cr, t0) for t0, env, _, _ in envs], centers, duration, speech)
+        out["ratio"] = r
+        if best is None or (out["mode"] != "inconclusive", out["z_total"]) > (best["mode"] != "inconclusive", best["z_total"]):
             best = out
         if r == 1.0 and out["mode"] != "inconclusive" and out["confidence"] >= 0.6:
-            break                                                  # 1.º teste já concordou bem: não se procuram deriva de frame rate
+            break                                                  # o 1.º teste já concordou bem: não se procura deriva de frame rate
     out = best
     # mapeamento final sobre os tempos ORIGINAIS: t_audio = (r·t + a) / (1 − b)
     r = out["ratio"]

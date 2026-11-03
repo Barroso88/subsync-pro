@@ -1,3 +1,7 @@
+import shutil
+import subprocess
+import wave
+
 import numpy as np
 import pytest
 
@@ -52,7 +56,7 @@ def run(cues, **kw):
 def test_constant_offset_both_directions_and_already_aligned():
     cues = make_cues()
     r = run(cues, offset=3.2)                                        # legenda 3,2 s atrasada → somar −3,2 s
-    assert r["mode"] == "offset" and abs(r["offset_s"] + 3.2) < 0.15 and r["scale"] == 1.0 and r["agree"] == r["windows_total"] == 8
+    assert r["mode"] == "offset" and abs(r["offset_s"] + 3.2) < 0.15 and r["scale"] == 1.0 and r["agree"] == r["windows_total"] == 10
     r = run(cues, offset=-7.0)
     assert r["mode"] == "offset" and abs(r["offset_s"] - 7.0) < 0.15
     r = run(cues, offset=0.0)
@@ -90,7 +94,7 @@ def test_robust_to_background_noise_and_some_bad_windows():
             return None                                              # ffmpeg falhou em 2 janelas
         return audio_for(cues, t0, d, offset=-5.0)
     r = A.analyze("x", cues, 7200, extract=flaky)
-    assert r["mode"] == "offset" and abs(r["offset_s"] - 5.0) < 0.15 and r["windows_failed"] == 2 and r["agree"] == 6
+    assert r["mode"] == "offset" and abs(r["offset_s"] - 5.0) < 0.15 and r["windows_failed"] == 2 and r["agree"] == 8
 
 
 def test_no_audio_at_all_raises_and_ffmpeg_command_is_safe(monkeypatch):
@@ -165,3 +169,58 @@ def test_api_refuses_unknown_duration_and_failed_extraction_is_reported(setup, m
     assert r.status_code in (202, 422)
     if r.status_code == 202:
         wait_job(setup, r.json()["job_id"])                                  # não deixar tarefas a correr quando o teste acaba
+
+
+def test_weak_per_window_evidence_adds_up_across_windows():
+    """Áudio real é ruidoso: cada janela, sozinha, é fraca (z baixo), mas o desvio verdadeiro reforça-se de janela em janela."""
+    cues = make_cues()
+    r = run(cues, offset=3.0, speech=900, bg=500, music=600)
+    assert r["mode"] == "offset" and abs(r["offset_s"] + 3.0) < 0.3 and r["z_total"] >= A.ZT_MIN
+    assert max(w["z"] for w in r["windows"]) < 6 or r["agree"] >= 4                      # nenhuma janela chegava sozinha ao limiar antigo
+    assert all("speech_pct" in w for w in r["windows"])                                   # mostra quanta «fala» foi detetada em cada janela
+
+
+def test_audio_filter_uses_center_channel_only_for_multichannel(monkeypatch):
+    class CP:
+        returncode = 0
+
+    def probe(layout):
+        def fake(cmd, **kw):
+            CP.stdout = f"{layout}\n".encode()
+            return CP()
+        return fake
+    for layout, center in (("6,5.1(side)", True), ("8,7.1", True), ("6,", True), ("2,stereo", False), ("1,mono", False)):
+        A._FILTER_CACHE.clear()
+        monkeypatch.setattr(A.subprocess, "run", probe(layout))
+        f = A.audio_filter("/x.mkv")
+        assert ("pan=mono|c0=FC" in f) is center and "highpass=f=150" in f and "lowpass=f=4000" in f
+    A._FILTER_CACHE.clear()
+    monkeypatch.setattr(A.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("sem ffprobe")))
+    assert A.audio_filter("/y.mkv") == "highpass=f=150,lowpass=f=4000"                    # sem ffprobe: mistura normal, não falha
+    A._FILTER_CACHE.clear()
+
+
+@pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg/ffprobe em falta")
+def test_real_ffmpeg_51_dialogue_in_center_beats_loud_music_in_other_channels(tmp_path):
+    rng = np.random.default_rng(11)
+    dur, sr = 1500, 16000
+    cues = make_cues(260, dur, seed=4)
+    n = dur * sr
+    ch = np.zeros((n, 6), dtype=np.float32)
+    for c in range(6):
+        ch[:, c] = rng.normal(0, 12000 if c != 2 else 100, n)                              # música/efeitos fortes nos outros canais; centro quase só ruído de fundo
+    for s, e in cues:
+        i0, i1 = int(s / 1000 * sr), int(e / 1000 * sr)
+        ch[i0:i1, 2] += rng.normal(0, 3500, i1 - i0)                                      # o diálogo está no canal central (índice 2)
+    path = tmp_path / "filme51.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(6)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(np.clip(ch, -32768, 32767).astype(np.int16).tobytes())
+    A._FILTER_CACHE.clear()
+    late = [(s + 3500, e + 3500) for s, e in cues]                                        # legenda 3,5 s atrasada
+    assert "pan=mono|c0=FC" in A.audio_filter(str(path))                                  # o ffprobe diz 6 canais → usa o canal central
+    r = A.analyze(str(path), late, dur, "ffmpeg")
+    assert r["mode"] == "offset" and abs(r["offset_s"] + 3.5) < 0.2 and r["agree"] >= 6   # com o canal central encontra o desvio mesmo com música muito mais forte
+    A._FILTER_CACHE.clear()
