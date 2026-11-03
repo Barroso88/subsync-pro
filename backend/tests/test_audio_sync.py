@@ -224,3 +224,33 @@ def test_real_ffmpeg_51_dialogue_in_center_beats_loud_music_in_other_channels(tm
     r = A.analyze(str(path), late, dur, "ffmpeg")
     assert r["mode"] == "offset" and abs(r["offset_s"] + 3.5) < 0.2 and r["agree"] >= 6   # com o canal central encontra o desvio mesmo com música muito mais forte
     A._FILTER_CACHE.clear()
+
+
+def test_short_cues_that_vanish_early_do_not_bias_the_offset():
+    """Se a legenda tira a fala do ecrã cedo demais, o fim «curto» não deve enviesar o desvio estimado (usa-se o tempo que a fala demora)."""
+    truth = make_cues(400, 3600, seed=8)
+    short = [(s, s + 400) for s, _ in truth]                          # a legenda mostra cada fala só 0,4 s…
+    ext = lambda cs: A.spoken_span([(s, e, 55) for s, e in cs])       # noqa: E731  (55 caracteres ≈ 3,9 s de fala)
+    shifted = [(s + 3000, e + 3000) for s, e in short]                # …e está 3 s atrasada
+    r = A.analyze("x", ext(shifted), 3600, extract=lambda p, t0, d, ff, *a: audio_for(truth, t0, d, offset=0.0))
+    assert r["mode"] == "offset" and abs(r["offset_s"] + 3.0) < 0.3
+    assert A.spoken_span([(0, 300, 10), (0, 9000, 400), (1000, 1500, 70)]) == [(0, 1200), (0, 9000), (1000, 6000)]    # mínimo 1,2 s, nunca encurta, máximo ~7 s de fala
+
+
+def test_api_duration_tool_preview_apply_verifies_and_restores(setup):
+    short = ("1\n00:00:01,000 --> 00:00:01,400\nOlá, tudo bem contigo hoje, meu amigo?\n\n"
+             "2\n00:00:01,600 --> 00:00:02,000\nEstou bem, obrigado por perguntares.\n\n3\n00:00:10,000 --> 00:00:14,000\nUma fala longa com tempo de sobra para ser lida.\n")
+    setup.ptfile.write_text(short, "utf-8")
+    setup.core.scanner.scan_library(dict(setup.core.db.one("SELECT * FROM libraries WHERE id=1")), None, str(setup.dir), force_subs=True)
+    pv = setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "durations", "params": {}}).json()
+    assert pv["kind"] == "text" and pv["stats"]["changed"] == 2 and "mais tempo no ecrã" in pv["summary"] and setup.ptfile.read_text("utf-8") == short
+    ap = setup.post(f"/api/subtitles/{setup.pt}/apply", json={"action": "durations", "params": {}, "base_hash": pv["base_hash"]})
+    assert ap.status_code == 200
+    cues = parse_srt(setup.ptfile.read_text("utf-8")).cues
+    assert [c.start_ms for c in cues] == [1000, 1600, 10000] and cues[0].end_ms == 1520 and cues[1].end_ms > 2000 and cues[2].end_ms == 14000   # inícios iguais; 1.ª limitada pela 2.ª
+    assert setup.post(f"/api/subtitle-edits/{ap.json()['edit_id']}/restore", json={}).status_code == 200 and setup.ptfile.read_text("utf-8") == short
+    # nada a alterar / opções inválidas
+    ok = "1\n00:00:01,000 --> 00:00:05,000\nOlá.\n"
+    setup.ptfile.write_text(ok, "utf-8")
+    assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "durations", "params": {}}).status_code == 422
+    assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "durations", "params": {"cps": 2}}).status_code == 400

@@ -192,6 +192,16 @@ def decide(curves: list[np.ndarray | None], centers: list[float], duration: floa
     return out
 
 
+def spoken_span(cues: list[tuple[int, int, int]]) -> list[tuple[int, int]]:
+    """[(início, fim, nº de caracteres)] → [(início, fim)] com o fim alongado até ao tempo que a fala demora a dizer (≈14 car/s, 1,2–7 s).
+    Falas que desaparecem depressa demais (fim muito cedo) deixariam a correlação alinhar o início do som com o meio da fala e dar um desvio sistemático."""
+    out = []
+    for s, e, n in cues:
+        spoken = int(min(7000, max(1200, n * 1000 / 14)))
+        out.append((s, max(e, s + spoken)))
+    return out
+
+
 # ---- orquestração ---------------------------------------------------------------------
 
 def window_starts(duration: float, n: int = N_WINDOWS, length: int = WINDOW_S) -> list[float]:

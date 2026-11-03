@@ -5,7 +5,7 @@ import { api } from "../api";
 import { cx, fmtTs } from "../lib";
 import { Badge, Modal, Skeleton, Tabs, useToast } from "./ui";
 
-type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "text" | "convert" | "delete";
+type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "durations" | "text" | "convert" | "delete";
 interface AudioWin { t: number; offset: number | null; z: number; used?: boolean; speech_pct?: number }
 interface AudioRes { mode: "aligned" | "offset" | "linear" | "inconclusive"; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; z_total?: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
 interface Cue { n: number; start: number; end: number; text: string }
@@ -25,7 +25,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   const toast = useToast();
   const qc = useQueryClient();
   const [tool, setTool] = useState<Tool>("shift");
-  const [params, setParams] = useState<Record<string, any>>({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false });
+  const [params, setParams] = useState<Record<string, any>>({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false, cps: 17, min_seconds: 1, max_seconds: 7 });
   const [pv, setPv] = useState<Preview | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
   const [audioJob, setAudioJob] = useState<number | null>(null);
@@ -45,12 +45,13 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   }, [audioQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
   const audioCancel = useMutation({ mutationFn: () => api.post(`/jobs/${audioJob}/cancel`) });
   const audioUsable = !!audioRes && (audioRes.mode === "offset" || audioRes.mode === "linear");
-  useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false }); setPv(null); } }, [sub?.id]);
+  useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false, cps: 17, min_seconds: 1, max_seconds: 7 }); setPv(null); } }, [sub?.id]);
 
   const cues = useQuery({ queryKey: ["sub-cues", sub?.id], queryFn: () => api.get<CuesRes>(`/subtitles/${sub!.id}/cues`), enabled: !!sub && sub.isSrt });
   const body = () => ({ action: tool === "text" ? "textfix" : tool === "audio" ? "linear" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
     : tool === "convert" ? { fix_mojibake: !!params.fix_mojibake, keep_original: !!params.keep_original }
-      : tool === "audio" ? { scale: audioRes?.scale ?? 1, offset_seconds: audioRes?.offset_s ?? 0 } : params });
+      : tool === "audio" ? { scale: audioRes?.scale ?? 1, offset_seconds: audioRes?.offset_s ?? 0 }
+        : tool === "durations" ? { cps: Number(params.cps), min_seconds: Number(params.min_seconds), max_seconds: Number(params.max_seconds) } : params });
   const preview = useMutation({ mutationFn: () => api.post<Preview>(`/subtitles/${sub!.id}/preview`, body()), onSuccess: setPv, onError: (e: Error) => { setPv(null); toast("bad", e.message); } });
   const apply = useMutation({
     mutationFn: () => api.post<{ edit_id: number; summary: string }>(`/subtitles/${sub!.id}/apply`, { ...body(), base_hash: pv!.base_hash }),
@@ -100,7 +101,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         {sub.canEdit && !pv && tool !== "delete" && <div className="text-xs text-dim">Para ativar «Aplicar», carregue primeiro em <b className="text-mute">Pré-visualizar</b> (se disser que não há nada a alterar, não há nada para aplicar).</div>}
         {!sub.canEdit && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Esta legenda está numa biblioteca só de leitura (ou sem permissão de escrita). Ative a escrita em Definições → Bibliotecas.</div>}
         {sub.canEdit && !sub.isSrt && tool !== "convert" && tool !== "delete" && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Estas ferramentas só editam legendas SRT. Converta-a primeiro no separador «Converter».</div>}
-        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "audio", label: "Alinhar com o áudio" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
+        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "audio", label: "Alinhar com o áudio" }, { id: "durations", label: "Durações" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
 
         {tool === "shift" && (
           <div className="space-y-2.5">
@@ -150,6 +151,16 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
                 </div>
               </div>
             )}
+          </div>
+        )}
+        {tool === "durations" && (
+          <div className="space-y-3">
+            <div className="text-sm text-mute flex gap-2"><Clock size={16} className="shrink-0 mt-0.5" />Para legendas em que as falas <b className="text-fg">desaparecem depressa demais</b> para se ler. Alonga o <b className="text-fg">fim</b> das falas curtas até ao tempo de leitura. <b className="text-fg">O início, o texto e a ordem não mudam</b>; nunca encurta uma fala nem a sobrepõe à seguinte.</div>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <label className="space-y-1 text-xs text-mute">Velocidade de leitura (car/s)<input className="input" type="number" min={8} max={40} step={1} value={params.cps} onChange={(e) => set("cps", Number(e.target.value))} /><span className="text-dim">17 é o habitual; menos = fica mais tempo</span></label>
+              <label className="space-y-1 text-xs text-mute">Mínimo por fala (s)<input className="input" type="number" min={0.3} max={3} step={0.1} value={params.min_seconds} onChange={(e) => set("min_seconds", Number(e.target.value))} /></label>
+              <label className="space-y-1 text-xs text-mute">Máximo por fala (s)<input className="input" type="number" min={2} max={15} step={0.5} value={params.max_seconds} onChange={(e) => set("max_seconds", Number(e.target.value))} /></label>
+            </div>
           </div>
         )}
         {tool === "audio" && (
@@ -222,12 +233,12 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
           </div>
         )}
 
-        {tool === "text" && pv?.kind === "text" && (
+        {(tool === "text" || tool === "durations") && pv?.kind === "text" && (
           <div className="space-y-3">
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Wand2 size={15} className="text-accent" />{pv.summary}</div>
               {pv.warnings.map((w, i) => <div key={i} className="text-xs text-warn flex gap-1.5"><AlertTriangle size={13} className="shrink-0 mt-0.5" />{w}</div>)}
-              <div className="text-xs text-dim">Mostra as primeiras {pv.changes?.length} alterações. Os tempos e a ordem das falas ficam iguais (verificado antes de gravar).</div>
+              <div className="text-xs text-dim">Mostra as primeiras {pv.changes?.length} alterações. {tool === "durations" ? "Só o fim das falas curtas é alongado: início, texto e ordem ficam iguais (verificado antes de gravar)." : "Os tempos e a ordem das falas ficam iguais (verificado antes de gravar)."}</div>
             </div>
             <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">#</th><th className="th">Antes</th><th className="th">Depois</th></tr></thead>
               <tbody>{pv.changes?.map((c) => (
@@ -253,7 +264,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
             <div className="text-xs text-dim flex gap-1.5"><CheckCircle2 size={13} className="shrink-0 mt-0.5 text-ok" />O original fica em backup e pode ser restaurado (remove o .srt criado e repõe o ficheiro).</div>
           </div>
         )}
-        {tool !== "delete" && tool !== "text" && tool !== "convert" && pv && (
+        {tool !== "delete" && tool !== "text" && tool !== "durations" && tool !== "convert" && pv && (
           <div className="space-y-3">
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Clock size={15} className="text-accent" />{pv.summary}</div>
@@ -273,7 +284,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 }
 
 interface Edit { id: number; name: string; action: string; created_at: string; restored_at: string | null; backup_exists: boolean; params: Record<string, any> }
-const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", linear: "Alinhada com o áudio", bazarr_overwrite: "Substituída pelo Bazarr" };
+const ACTION: Record<string, string> = { textfix: "Limpeza de texto", durations: "Durações das falas", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", linear: "Alinhada com o áudio", bazarr_overwrite: "Substituída pelo Bazarr" };
 
 export function EditHistory({ mediaId }: { mediaId: number }) {
   const qc = useQueryClient();

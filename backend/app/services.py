@@ -1477,13 +1477,30 @@ class App:
             raise ServiceError(str(e), e.status)
         return sub, real, data, text, enc, parsed, fn, info
 
-    def _text_plan(self, sid: int, params: dict):
+    def _text_plan(self, sid: int, params: dict, mode: str = "textfix"):
         sub = self._sub(sid)
         real, data = self._read_editable(sub)
         text, enc = decode_bytes(data)
         orig = parse_srt(text)
         if not orig.cues:
             raise ServiceError("Legenda sem eventos legíveis.", 422)
+        if mode == "durations":
+            try:
+                new_text, stats, changes = st.fix_durations(text, params)
+            except st.ToolError as e:
+                raise ServiceError(str(e), e.status)
+            if stats["changed"] == 0:
+                raise ServiceError("Nada a alterar: nenhuma fala desaparece antes do tempo de leitura com estas opções.", 422)
+            new = parse_srt(new_text)
+            ok = len(new.cues) == len(orig.cues)
+            for i, (a, b) in enumerate(zip(orig.cues, new.cues)):                      # início igual, fim nunca encurta, nunca sobrepõe a seguinte
+                nxt = orig.cues[i + 1].start_ms if i + 1 < len(orig.cues) else None
+                if a.start_ms != b.start_ms or b.end_ms < a.end_ms or a.text != b.text or (nxt is not None and a.end_ms <= nxt < b.end_ms):
+                    ok = False
+                    break
+            if not ok:
+                raise ServiceError("Verificação falhou: o resultado alteraria inícios, texto ou sobreporia falas. Nada foi alterado.", 500)
+            return sub, real, data, enc, new_text, stats, changes
         try:
             new_text, stats, changes = st.transform_srt_text(text, params, sub.get("lang"))
         except st.ToolError as e:
@@ -1498,8 +1515,12 @@ class App:
             raise ServiceError("Verificação falhou: os tempos mudariam. Nada foi alterado.", 500)
         return sub, real, data, enc, new_text, stats, changes
 
-    def _text_preview(self, sid: int, params: dict) -> dict:
-        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params)
+    def _text_preview(self, sid: int, params: dict, mode: str = "textfix") -> dict:
+        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params, mode)
+        if mode == "durations":
+            return {"kind": "text", "summary": f"{stats['changed']} de {stats['cues']} falas ficam mais tempo no ecrã (+{stats['extended_ms'] / 1000:.1f} s no total; só se alonga o fim).",
+                    "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": stats, "changes": changes,
+                    "warnings": ["Só se alonga o fim das falas curtas: o início, o texto e a ordem não mudam, nenhuma fala encurta e nenhuma sobrepõe a seguinte."]}
         parts = [f"{stats['style']} com tags de estilo" if stats["style"] else "", f"{stats['hi']} com marcas HI" if stats["hi"] else "",
                  f"{stats['common']} com correções comuns" if stats["common"] else "", f"{stats['uppercase']} em maiúsculas" if stats["uppercase"] else "",
                  f"{stats['watermark']} anúncios/marcas de água" if stats["watermark"] else ""]
@@ -1562,8 +1583,8 @@ class App:
         return {"edit_id": eid, "target": os.path.basename(target)}
 
     def sub_preview(self, sid: int, action: str, params: dict) -> dict:
-        if action == "textfix":
-            return self._text_preview(sid, params)
+        if action in ("textfix", "durations"):
+            return self._text_preview(sid, params, action)
         if action == "convert":
             return self._convert_preview(sid, params)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
@@ -1591,8 +1612,8 @@ class App:
             except Exception as e:  # noqa: BLE001
                 log.warning("reanálise após edição: %s", scrub(str(e)))
 
-    def _text_apply(self, sid: int, params: dict, base_hash: str) -> dict:
-        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params)
+    def _text_apply(self, sid: int, params: dict, base_hash: str, mode: str = "textfix") -> dict:
+        sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params, mode)
         if st.sha1(data) != base_hash:
             raise ServiceError("O ficheiro mudou desde a pré-visualização. Volte a pré-visualizar.", 409)
         backup = self._backup(real, sid)
@@ -1600,14 +1621,15 @@ class App:
             st.atomic_replace(real, st.encode_like(new_text, data, enc))
         except OSError as e:
             raise ServiceError(f"Não foi possível escrever: {e.strerror}", 403)
-        eid = self._record_edit(sub, "textfix", params, backup, st.sha1(data), st.sha1(Path(real).read_bytes()))
-        add_event(self.db, "edit", f"Texto da legenda limpo ({stats['changed']} falas): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
+        eid = self._record_edit(sub, mode, params, backup, st.sha1(data), st.sha1(Path(real).read_bytes()))
+        what = "Durações das falas ajustadas" if mode == "durations" else "Texto da legenda limpo"
+        add_event(self.db, "edit", f"{what} ({stats['changed']} falas): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
         self._rescan_dir(sub)
-        return {"edit_id": eid, "changed": stats["changed"], "dropped": stats["dropped"]}
+        return {"edit_id": eid, "changed": stats["changed"], "dropped": stats.get("dropped", 0)}
 
     def sub_apply(self, sid: int, action: str, params: dict, base_hash: str) -> dict:
-        if action == "textfix":
-            return self._text_apply(sid, params, base_hash)
+        if action in ("textfix", "durations"):
+            return self._text_apply(sid, params, base_hash, action)
         if action == "convert":
             return self._convert_apply(sid, params, base_hash)
         sub, real, data, text, enc, parsed, fn, info = self._plan(sid, action, params)
@@ -1648,7 +1670,7 @@ class App:
         except PathSecurityError:
             raise JobError("A legenda está fora das bibliotecas.")
         text, _ = decode_bytes(Path(real).read_bytes())
-        cues = [(c.start_ms, c.end_ms) for c in parse_srt(text).cues]
+        cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parse_srt(text).cues])      # falas que desaparecem cedo demais contam com o tempo de leitura
 
         def prog(i: int, total: int, msg: str) -> None:
             if ctx.total == 0:

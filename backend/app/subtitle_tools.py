@@ -607,3 +607,76 @@ def plan_convert(data: bytes, ext: str, opts: dict | None = None) -> dict:
 def convert_target(path: str, fmt: str) -> str:
     """Caminho de saída: mesmo nome com extensão .srt (mantém o código de idioma do nome)."""
     return os.path.splitext(path)[0] + ".srt"
+
+
+def _plain_len(lines: list[str]) -> int:
+    t = re.sub(r"<[^>]+>|\{\\[^}]*\}", "", " ".join(lines))
+    return len(re.sub(r"\s+", " ", t).strip())
+
+
+def _fmt_like(ms: int, like: str) -> str:
+    out = _fmt(ms)
+    return out.replace(",", ".") if "." in like and "," not in like else out
+
+
+def fix_durations(text: str, opts: dict | None = None, preview_limit: int = 40) -> tuple[str, dict, list[dict]]:
+    """Alonga as falas que desaparecem depressa demais para se ler (só aumenta; nunca encurta, nunca altera o início e nunca sobrepõe a fala seguinte).
+    Tempo desejado = caracteres ÷ velocidade de leitura (CPS), entre um mínimo e um máximo."""
+    opts = opts or {}
+    try:
+        cps = float(opts.get("cps", 17))
+        min_ms = int(round(float(opts.get("min_seconds", 1.0)) * 1000))
+        max_ms = int(round(float(opts.get("max_seconds", 7.0)) * 1000))
+        gap = int(opts.get("gap_ms", 80))
+    except (TypeError, ValueError):
+        raise ToolError("Opções inválidas.")
+    if not (8 <= cps <= 40 and 300 <= min_ms <= 3000 and 2000 <= max_ms <= 15000 and 0 <= gap <= 500 and min_ms < max_ms):
+        raise ToolError("Opções fora do intervalo razoável (velocidade 8–40 car/s, mínimo 0,3–3 s, máximo 2–15 s, intervalo 0–500 ms).")
+    crlf = "\r\n" in text
+    src = text.replace("\r\n", "\n")
+    parts = re.split(r"(\n[ \t]*\n)", src)
+    blocks = []
+    for i in range(0, len(parts), 2):
+        block, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else "")
+        m = TS_LINE.search(block)
+        if not m:
+            blocks.append({"raw": block + sep, "cue": False})
+            continue
+        body = block[m.end():].lstrip("\n").rstrip("\n")
+        blocks.append({"cue": True, "pre": block[:m.start()], "m": m, "post": block[m.end():], "sep": sep, "lines": body.split("\n") if body else [],
+                       "s": _to_ms(m.group("a")), "e": _to_ms(m.group("b"))})
+    cues = [b for b in blocks if b["cue"]]
+    stats = {"cues": len(cues), "changed": 0, "extended_ms": 0}
+    changes: list[dict] = []
+    for pos, b in enumerate(cues, 1):
+        chars = _plain_len(b["lines"])
+        if not chars:
+            continue
+        want = int(min(max(min_ms, chars * 1000 / cps), max_ms))
+        target = b["s"] + want
+        if target <= b["e"]:
+            continue
+        nxt = cues[pos]["s"] if pos < len(cues) else None
+        new_e = target if nxt is None else min(target, max(b["e"], nxt - gap))
+        if new_e <= b["e"]:
+            continue
+        stats["changed"] += 1
+        stats["extended_ms"] += new_e - b["e"]
+        if len(changes) < preview_limit:
+            changes.append({"n": pos, "before": f"{(b['e'] - b['s']) / 1000:.1f} s · " + " ⏎ ".join(b["lines"])[:120], "after": f"{(new_e - b['s']) / 1000:.1f} s", "tags": [f"+{(new_e - b['e']) / 1000:.1f} s"]})
+        b["new_e"] = new_e
+    out = []
+    for b in blocks:
+        if not b["cue"]:
+            out.append(b["raw"])
+            continue
+        m = b["m"]
+        if "new_e" in b:
+            head = f"{m.group('a')}{m.group('mid')}{_fmt_like(b['new_e'], m.group('b'))}{m.group('rest')}"
+            out.append(b["pre"] + head + b["post"] + b["sep"])
+        else:
+            out.append(b["pre"] + m.group(0) + b["post"] + b["sep"])
+    res = "".join(out)
+    if crlf:
+        res = res.replace("\n", "\r\n")
+    return res, stats, changes
