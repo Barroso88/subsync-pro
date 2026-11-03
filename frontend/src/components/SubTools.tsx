@@ -105,7 +105,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 
         {tool === "shift" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><Move size={16} className="shrink-0 mt-0.5" />Desloca todas as falas. <b className="text-fg">Positivo atrasa</b> (a legenda aparece mais tarde), <b className="text-fg">negativo adianta</b>.</div>
+            <div className="text-sm text-mute flex gap-2"><Move size={16} className="shrink-0 mt-0.5" /><div>Desloca todas as falas. <b className="text-fg">Positivo atrasa</b> (a legenda aparece mais tarde), <b className="text-fg">negativo adianta</b>.</div></div>
             <div className="flex items-center gap-2 flex-wrap">
               <input className="input !w-32" type="number" step="0.1" value={params.seconds} onChange={(e) => set("seconds", Number(e.target.value))} aria-label="Segundos" /><span className="text-sm text-mute">segundos</span>
               {[-5, -1, -0.5, 0.5, 1, 5].map((v) => <button key={v} className="btn-ghost !h-8" onClick={() => set("seconds", Math.round(((Number(params.seconds) || 0) + v) * 100) / 100)}>{v > 0 ? "+" : ""}{v}</button>)}
@@ -114,7 +114,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "fps" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><Film size={16} className="shrink-0 mt-0.5" />Corrige uma legenda feita para outro frame rate (a fala vai ficando cada vez mais adiantada ou atrasada ao longo do filme). Multiplica os tempos por <i>origem ÷ destino</i>.</div>
+            <div className="text-sm text-mute flex gap-2"><Film size={16} className="shrink-0 mt-0.5" /><div>Corrige uma legenda feita para outro frame rate (a fala vai ficando cada vez mais adiantada ou atrasada ao longo do filme). Multiplica os tempos por <i>origem ÷ destino</i>.</div></div>
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <span>De</span><select className="input !w-28" value={params.from_fps} onChange={(e) => set("from_fps", Number(e.target.value))}>{FPS.map((f) => <option key={f} value={f}>{f}</option>)}</select>
               <span>para</span><select className="input !w-28" value={params.to_fps} onChange={(e) => set("to_fps", Number(e.target.value))}>{FPS.map((f) => <option key={f} value={f}>{f}</option>)}</select><span className="text-mute">fps</span>
@@ -123,7 +123,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "twopoint" && (
           <div className="space-y-3">
-            <div className="text-sm text-mute flex gap-2"><Ruler size={16} className="shrink-0 mt-0.5" />Escolha <b className="text-fg">duas falas</b> (uma perto do início, outra perto do fim) e diga <b className="text-fg">quando devem aparecer no vídeo</b>. A app calcula o deslocamento e a escala.</div>
+            <div className="text-sm text-mute flex gap-2"><Ruler size={16} className="shrink-0 mt-0.5" /><div>Escolha <b className="text-fg">duas falas</b> (uma perto do início, outra perto do fim) e diga <b className="text-fg">quando devem aparecer no vídeo</b>. A app calcula o deslocamento e a escala.</div></div>
             {cues.isLoading && <Skeleton className="h-24" />}
             {cues.data && [1, 2].map((slot) => (
               <div key={slot} className="space-y-1.5">
@@ -137,7 +137,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "reference" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><GitCompare size={16} className="shrink-0 mt-0.5" />Alinha esta legenda com <b className="text-fg">outra legenda já existente</b> do mesmo filme (por exemplo, a que sabe estar certa). <b className="text-fg">Não usa o áudio</b>: assume que a referência está sincronizada.</div>
+            <div className="text-sm text-mute flex gap-2"><GitCompare size={16} className="shrink-0 mt-0.5" /><div>Alinha esta legenda com <b className="text-fg">outra legenda já existente</b> do mesmo filme (por exemplo, a que sabe estar certa). <b className="text-fg">Não usa o áudio</b>: assume que a referência está sincronizada.</div></div>
             {cues.isLoading && <Skeleton className="h-10" />}
             {cues.data && refs.length === 0 && <div className="text-sm text-warn">Este filme não tem outra legenda externa válida para usar como referência.</div>}
             {refs.length > 0 && (
@@ -155,7 +155,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "durations" && (
           <div className="space-y-3">
-            <div className="text-sm text-mute flex gap-2"><Clock size={16} className="shrink-0 mt-0.5" />Para legendas em que as falas <b className="text-fg">desaparecem depressa demais</b> para se ler. Alonga o <b className="text-fg">fim</b> das falas curtas até ao tempo de leitura. <b className="text-fg">O início, o texto e a ordem não mudam</b>; nunca encurta uma fala nem a sobrepõe à seguinte.</div>
+            <div className="text-sm text-mute flex gap-2"><Clock size={16} className="shrink-0 mt-0.5" /><div>Para legendas em que as falas <b className="text-fg">desaparecem depressa demais</b> para se ler. Alonga o <b className="text-fg">fim</b> das falas curtas até ao tempo de leitura. <b className="text-fg">O início, o texto e a ordem não mudam</b>; nunca encurta uma fala nem a sobrepõe à seguinte.</div></div>
             <div className="grid sm:grid-cols-3 gap-3">
               <label className="space-y-1 text-xs text-mute">Velocidade de leitura (car/s)<input className="input" type="number" min={8} max={40} step={1} value={params.cps} onChange={(e) => set("cps", Number(e.target.value))} /><span className="text-dim">17 é o habitual; menos = fica mais tempo</span></label>
               <label className="space-y-1 text-xs text-mute">Mínimo por fala (s)<input className="input" type="number" min={0.3} max={3} step={0.1} value={params.min_seconds} onChange={(e) => set("min_seconds", Number(e.target.value))} /></label>
@@ -165,7 +165,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "audio" && (
           <div className="space-y-3">
-            <div className="text-sm text-mute flex gap-2"><AudioLines size={16} className="shrink-0 mt-0.5" />Compara quando a legenda mostra texto com quando há <b className="text-fg">fala no áudio do vídeo</b>, em 10 janelas de 4 min espalhadas pelo filme, e estima o desvio (ou a deriva de frame rate). <b className="text-fg">Só lê o áudio</b>; nada é gravado sem pré-visualização e confirmação.</div>
+            <div className="text-sm text-mute flex gap-2"><AudioLines size={16} className="shrink-0 mt-0.5" /><div>Compara quando a legenda mostra texto com quando há <b className="text-fg">fala no áudio do vídeo</b>, em 10 janelas de 4 min espalhadas pelo filme, e estima o desvio (ou a deriva de frame rate). <b className="text-fg">Só lê o áudio</b>; nada é gravado sem pré-visualização e confirmação.</div></div>
             <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
               <div>• O ffmpeg lê cerca de 40 min de áudio do ficheiro, no canal central se for 5.1/7.1 (em ficheiros grandes na rede pode demorar 1–3 min). Corre em segundo plano; pode fechar a janela.</div>
               <div>• Só conclui se as janelas <b>concordarem</b>; senão diz «inconclusivo». Música, dobragens, legendas forçadas ou outro corte do filme podem enganar a deteção.</div>
@@ -204,7 +204,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "text" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><Wand2 size={16} className="shrink-0 mt-0.5" />Limpa o <b className="text-fg">texto</b> das falas. <b className="text-fg">Os tempos não mudam.</b> Escolha o que aplicar e confira na pré-visualização.</div>
+            <div className="text-sm text-mute flex gap-2"><Wand2 size={16} className="shrink-0 mt-0.5" /><div>Limpa o <b className="text-fg">texto</b> das falas. <b className="text-fg">Os tempos não mudam.</b> Escolha o que aplicar e confira na pré-visualização.</div></div>
             {([
               ["hi", "Remover marcas para surdos (HI)", "[ruído], (música) no início/fim, «NOME:» em maiúsculas e linhas só com ♪. Falas que ficam vazias são removidas."],
               ["style", "Remover tags de estilo", "<i>, <b>, <u>, <font> e códigos {\\an8}. Deixa de haver itálicos."],
@@ -217,7 +217,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "convert" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><FileCog size={16} className="shrink-0 mt-0.5" />Converte para <b className="text-fg">SRT em UTF-8 sem BOM</b>, o formato que a Smart TV, o Android TV e o Plex leem melhor. <b className="text-fg">Os tempos não mudam.</b> ASS/SSA/VTT passam a um novo ficheiro .srt (nunca substitui um existente); um SRT em cp1252/UTF-16 ou com BOM é reescrito no mesmo ficheiro.</div>
+            <div className="text-sm text-mute flex gap-2"><FileCog size={16} className="shrink-0 mt-0.5" /><div>Converte para <b className="text-fg">SRT em UTF-8 sem BOM</b>, o formato que a Smart TV, o Android TV e o Plex leem melhor. <b className="text-fg">Os tempos não mudam.</b> ASS/SSA/VTT passam a um novo ficheiro .srt (nunca substitui um existente); um SRT em cp1252/UTF-16 ou com BOM é reescrito no mesmo ficheiro.</div></div>
             {([
               ["fix_mojibake", "Reparar acentos partidos", "«Ã£», «Ã©», «Ã§»… (UTF-8 gravado como cp1252). Só altera as linhas em que o resultado é UTF-8 válido."],
               ["keep_original", "Manter também o original", "Por omissão o ASS/VTT vai para backup (restaurável) para o Plex não mostrar duas legendas iguais. Só se aplica a ASS/SSA/VTT."],
