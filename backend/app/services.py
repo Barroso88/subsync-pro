@@ -73,6 +73,7 @@ class App:
         self.jobs.register("webhook_import", self._job_webhook_import)
         self.jobs.register("bazarr_batch", self._job_bazarr_batch)
         self.jobs.register("convert_scan", self._job_convert_scan)
+        self.jobs.register("audio_sync", self._job_audio_sync, lane="audio")      # leitura de áudio dos vídeos: uma de cada vez
         self.jobs.register("translate", self._job_translate, lane="translate")   # uma tradução de cada vez (limites dos serviços)
         self.jobs.register("convert_batch", self._job_convert_batch)
 
@@ -1627,6 +1628,42 @@ class App:
         add_event(self.db, "edit", f"Legenda ajustada ({action}): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
         self._rescan_dir(sub)
         return {"edit_id": eid, "summary": info["summary"], "dropped": stats["dropped"], "clamped": stats["clamped"]}
+
+    # ---- alinhar a legenda com a fala do áudio (opcional, a pedido) ------------------------
+    def start_audio_sync(self, sid: int) -> int:
+        sub = self._sub(sid)
+        if not sub["path"].lower().endswith(".srt") or not sub.get("media_id"):
+            raise ServiceError("Só legendas SRT associadas a um vídeo.", 422)
+        m = self.db.one("SELECT path,duration FROM media_items WHERE id=?", (sub["media_id"],))
+        if not m or not m["duration"] or not os.path.isfile(m["path"]):
+            raise ServiceError("O vídeo não está acessível ou não tem duração conhecida (reanalise o filme).", 422)
+        return self.jobs.submit("audio_sync", f"Alinhar com o áudio: {os.path.basename(sub['path'])}", {"subtitle_id": sid}, dedupe=True)
+
+    def _job_audio_sync(self, ctx: JobContext, p: dict) -> dict:
+        from . import audio_sync as au
+        sub = self._sub(p["subtitle_id"])
+        m = self.db.one("SELECT path,duration FROM media_items WHERE id=?", (sub["media_id"],))
+        try:
+            real = require_within(sub["path"], [l["path"] for l in self.libraries()])
+        except PathSecurityError:
+            raise JobError("A legenda está fora das bibliotecas.")
+        text, _ = decode_bytes(Path(real).read_bytes())
+        cues = [(c.start_ms, c.end_ms) for c in parse_srt(text).cues]
+
+        def prog(i: int, total: int, msg: str) -> None:
+            if ctx.total == 0:
+                ctx.set_total(total + 1)
+            ctx.step(msg, inc=1 if i > 0 else 0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
+        try:
+            res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog)
+        except au.AudioSyncError as e:
+            raise JobError(str(e))
+        res["subtitle_id"], res["base_hash"] = sub["id"], st.sha1(Path(real).read_bytes())
+        if res["mode"] == "aligned":                       # prova real (áudio): marca como alinhada
+            self.db.execute("UPDATE subtitles SET sync_status='aligned', sync_detail=? WHERE id=?",
+                            (f"Alinhada com o áudio ({res['agree']}/{res['windows_total']} janelas concordam)", sub["id"]))
+        add_event(self.db, "edit", f"Alinhamento com o áudio de {os.path.basename(sub['path'])}: {res['mode']} ({res['agree']}/{res['windows_total']} janelas)", "info", sub["media_id"])
+        return res
 
     def sub_delete(self, sid: int) -> dict:
         """Remove a legenda da pasta mas guarda uma cópia (restaurável). Nunca apaga vídeos."""

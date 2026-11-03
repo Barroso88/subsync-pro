@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Film, FileCog, GitCompare, Loader2, Move, RotateCcw, Ruler, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, AudioLines, CheckCircle2, Clock, Film, FileCog, GitCompare, Loader2, Move, RotateCcw, Ruler, Trash2, Wand2 } from "lucide-react";
 import { api } from "../api";
 import { cx, fmtTs } from "../lib";
 import { Badge, Modal, Skeleton, Tabs, useToast } from "./ui";
 
-type Tool = "shift" | "fps" | "twopoint" | "reference" | "text" | "convert" | "delete";
+type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "text" | "convert" | "delete";
+interface AudioWin { t: number; offset: number | null; z: number; used?: boolean }
+interface AudioRes { mode: "aligned" | "offset" | "linear" | "inconclusive"; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
 interface Cue { n: number; start: number; end: number; text: string }
 interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number }[] }
 interface PRow { n: number; old_start: number; new_start: number; new_end: number; text: string }
@@ -26,12 +28,29 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   const [params, setParams] = useState<Record<string, any>>({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false });
   const [pv, setPv] = useState<Preview | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [audioJob, setAudioJob] = useState<number | null>(null);
+  const [audioRes, setAudioRes] = useState<AudioRes | null>(null);
+  useEffect(() => { setAudioJob(null); setAudioRes(null); }, [sub?.id]);
   useEffect(() => { setPv(null); setConfirmDel(false); }, [tool, sub?.id]);
+  const audioStart = useMutation({ mutationFn: () => api.post<{ job_id: number }>(`/subtitles/${sub!.id}/audio-sync/start`), onSuccess: (r) => { setAudioRes(null); setPv(null); setAudioJob(r.job_id); }, onError: (e: Error) => toast("bad", e.message) });
+  const audioQ = useQuery({ queryKey: ["audio-job", audioJob], enabled: audioJob != null,
+    queryFn: () => api.get<{ status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: AudioRes | null }>(`/jobs/${audioJob}`),
+    refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
+  const audioRunning = audioJob != null && (!audioQ.data || ["queued", "running"].includes(audioQ.data.status));
+  useEffect(() => {
+    const j = audioQ.data;
+    if (!j || audioJob == null) return;
+    if (j.status === "done" && j.result) { setAudioRes(j.result); setAudioJob(null); qc.invalidateQueries({ queryKey: ["media"] }); }
+    else if (["failed", "cancelled", "interrupted"].includes(j.status)) { toast(j.status === "failed" ? "bad" : "warn", j.error || "Análise cancelada."); setAudioJob(null); }
+  }, [audioQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const audioCancel = useMutation({ mutationFn: () => api.post(`/jobs/${audioJob}/cancel`) });
+  const audioUsable = !!audioRes && (audioRes.mode === "offset" || audioRes.mode === "linear");
   useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false }); setPv(null); } }, [sub?.id]);
 
   const cues = useQuery({ queryKey: ["sub-cues", sub?.id], queryFn: () => api.get<CuesRes>(`/subtitles/${sub!.id}/cues`), enabled: !!sub && sub.isSrt });
-  const body = () => ({ action: tool === "text" ? "textfix" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
-    : tool === "convert" ? { fix_mojibake: !!params.fix_mojibake, keep_original: !!params.keep_original } : params });
+  const body = () => ({ action: tool === "text" ? "textfix" : tool === "audio" ? "linear" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
+    : tool === "convert" ? { fix_mojibake: !!params.fix_mojibake, keep_original: !!params.keep_original }
+      : tool === "audio" ? { scale: audioRes?.scale ?? 1, offset_seconds: audioRes?.offset_s ?? 0 } : params });
   const preview = useMutation({ mutationFn: () => api.post<Preview>(`/subtitles/${sub!.id}/preview`, body()), onSuccess: setPv, onError: (e: Error) => { setPv(null); toast("bad", e.message); } });
   const apply = useMutation({
     mutationFn: () => api.post<{ edit_id: number; summary: string }>(`/subtitles/${sub!.id}/apply`, { ...body(), base_hash: pv!.base_hash }),
@@ -47,7 +66,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   if (!sub) return null;
   const refs = cues.data?.references ?? [];
   const pickCue = (slot: 1 | 2, c: Cue) => { set(`cue${slot}`, c.n); if (!params[`time${slot}`]) set(`time${slot}`, fmtTs(c.start)); };
-  const editable = sub.canEdit && (tool === "convert" ? sub.isText : sub.isSrt);
+  const editable = sub.canEdit && (tool === "convert" ? sub.isText : tool === "audio" ? sub.isSrt && audioUsable : sub.isSrt);
 
   const row = (r: PRow) => (
     <tr key={r.n} className="border-b border-line/50 last:border-0 text-xs">
@@ -81,7 +100,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         {sub.canEdit && !pv && tool !== "delete" && <div className="text-xs text-dim">Para ativar «Aplicar», carregue primeiro em <b className="text-mute">Pré-visualizar</b> (se disser que não há nada a alterar, não há nada para aplicar).</div>}
         {!sub.canEdit && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Esta legenda está numa biblioteca só de leitura (ou sem permissão de escrita). Ative a escrita em Definições → Bibliotecas.</div>}
         {sub.canEdit && !sub.isSrt && tool !== "convert" && tool !== "delete" && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Estas ferramentas só editam legendas SRT. Converta-a primeiro no separador «Converter».</div>}
-        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
+        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "audio", label: "Alinhar com o áudio" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
 
         {tool === "shift" && (
           <div className="space-y-2.5">
@@ -129,6 +148,43 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
                   <label className="flex items-center gap-2 cursor-pointer"><input type="radio" className="accent-[rgb(229,160,13)]" checked={params.mode === "offset"} onChange={() => set("mode", "offset")} />Só deslocar (offset)</label>
                   <label className="flex items-center gap-2 cursor-pointer"><input type="radio" className="accent-[rgb(229,160,13)]" checked={params.mode === "linear"} onChange={() => set("mode", "linear")} />Corrigir também a deriva (frame rate)</label>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+        {tool === "audio" && (
+          <div className="space-y-3">
+            <div className="text-sm text-mute flex gap-2"><AudioLines size={16} className="shrink-0 mt-0.5" />Compara quando a legenda mostra texto com quando há <b className="text-fg">fala no áudio do vídeo</b>, em 8 janelas espalhadas pelo filme, e estima o desvio (ou a deriva de frame rate). <b className="text-fg">Só lê o áudio</b>; nada é gravado sem pré-visualização e confirmação.</div>
+            <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
+              <div>• O ffmpeg lê cerca de 24 min de áudio do ficheiro (em ficheiros grandes na rede pode demorar 1–3 min). Corre em segundo plano; pode fechar a janela.</div>
+              <div>• Só conclui se as janelas <b>concordarem</b>; senão diz «inconclusivo». Música, dobragens, legendas forçadas ou outro corte do filme podem enganar a deteção.</div>
+              <div>• A «confiança» é a fração de janelas que concordam, não uma probabilidade.</div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className="btn-primary" disabled={!sub.isSrt || audioRunning || audioStart.isPending} onClick={() => audioStart.mutate()}>{(audioRunning || audioStart.isPending) ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} />}Analisar o áudio do vídeo</button>
+              {audioRunning && <button className="btn-ghost" onClick={() => audioCancel.mutate()}>Cancelar</button>}
+            </div>
+            {audioRunning && (
+              <div className="card bg-s2 p-3.5 space-y-2">
+                <div className="h-2 rounded-full bg-s3 overflow-hidden"><div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${audioQ.data?.total ? Math.min(100, (100 * audioQ.data.progress) / audioQ.data.total) : 4}%` }} /></div>
+                <div className="text-xs text-mute">{audioQ.data?.status === "queued" ? "Em fila (uma análise de áudio de cada vez)…" : audioQ.data?.current || audioQ.data?.message || "A iniciar…"}</div>
+              </div>
+            )}
+            {audioRes && (
+              <div className="space-y-3">
+                <div className={cx("card p-3.5 space-y-1.5 text-sm", audioRes.mode === "inconclusive" ? "border-warn/40" : "border-ok/40")}>
+                  {audioRes.mode === "aligned" && <div className="flex items-center gap-2 font-medium text-ok"><CheckCircle2 size={16} />Já está alinhada com a fala do vídeo ({audioRes.agree} de {audioRes.windows_total} janelas concordam, desvio ≈ {audioRes.offset_s.toFixed(2)} s). Nada a ajustar.</div>}
+                  {audioRes.mode === "offset" && <div className="font-medium">Desvio estimado: {audioRes.offset_s > 0 ? "atrasar" : "adiantar"} <b className="text-accent">{Math.abs(audioRes.offset_s).toFixed(2)} s</b> a toda a legenda ({audioRes.agree} de {audioRes.windows_total} janelas concordam).</div>}
+                  {audioRes.mode === "linear" && <div className="font-medium">Deriva de frame rate: tempos × <b className="text-accent">{audioRes.scale.toFixed(6)}</b> {audioRes.offset_s >= 0 ? "+" : "−"} {Math.abs(audioRes.offset_s).toFixed(2)} s ({audioRes.agree} de {audioRes.windows_total} janelas concordam).</div>}
+                  {audioRes.mode === "inconclusive" && <div className="flex gap-2 text-warn"><AlertTriangle size={16} className="shrink-0 mt-0.5" /><span>Inconclusivo: {audioRes.reason}</span></div>}
+                  <div className="text-xs text-dim">Janelas: {audioRes.windows_total} · com fala clara {audioRes.windows_clear}{audioRes.windows_failed ? ` · sem áudio legível ${audioRes.windows_failed}` : ""}{audioRes.confidence ? ` · concordam ${Math.round(audioRes.confidence * 100)} %` : ""}{audioRes.residual_s != null ? ` · erro mediano ${audioRes.residual_s.toFixed(2)} s` : ""}</div>
+                  {audioUsable && <div className="text-xs text-mute">Carregue em <b>Pré-visualizar</b> para ver o antes/depois e só depois em Aplicar (fica cópia do original).</div>}
+                </div>
+                <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">Minuto</th><th className="th">Desvio medido</th><th className="th">Sinal</th><th className="th">Conta</th></tr></thead>
+                  <tbody>{audioRes.windows.map((w, i) => (
+                    <tr key={i} className="border-b border-line/50 last:border-0 text-xs"><td className="px-2 py-1.5 tabular-nums text-mute">{Math.round(w.t / 60)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{w.offset == null ? "—" : `${w.offset > 0 ? "+" : ""}${w.offset.toFixed(2)} s`}</td>
+                      <td className="px-2 py-1.5 tabular-nums text-dim">{w.z ? w.z.toFixed(1) : "—"}</td><td className="px-2 py-1.5">{w.used ? <CheckCircle2 size={13} className="text-ok" /> : <span className="text-dim">não</span>}</td></tr>))}</tbody></table></div>
               </div>
             )}
           </div>
@@ -215,7 +271,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 }
 
 interface Edit { id: number; name: string; action: string; created_at: string; restored_at: string | null; backup_exists: boolean; params: Record<string, any> }
-const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", bazarr_overwrite: "Substituída pelo Bazarr" };
+const ACTION: Record<string, string> = { textfix: "Limpeza de texto", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", linear: "Alinhada com o áudio", bazarr_overwrite: "Substituída pelo Bazarr" };
 
 export function EditHistory({ mediaId }: { mediaId: number }) {
   const qc = useQueryClient();

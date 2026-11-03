@@ -738,6 +738,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def sub_apply(sid: int, b: ApplyIn):
         return core.sub_apply(sid, b.action, b.params, b.base_hash)
 
+    @api.post("/subtitles/{sid:int}/audio-sync/start", status_code=202)
+    def audio_sync_start(sid: int):
+        return {"job_id": core.start_audio_sync(sid)}
+
     @api.post("/subtitles/{sid:int}/delete")
     def sub_delete(sid: int):
         return core.sub_delete(sid)

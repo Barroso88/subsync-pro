@@ -128,6 +128,19 @@ def make_mapper(action: str, params: dict, cues: list[Cue], reference: ParsedSub
         if not 0.8 <= ratio <= 1.25:
             raise ToolError("Conversão de frame rate fora do intervalo razoável.")
         return (lambda t: int(round(t * ratio))), {"summary": f"Converte de {src:g} para {dst:g} fps (tempos × {ratio:.6f}).", "ratio": ratio}
+    if action == "linear":
+        try:
+            a, b = float(params["scale"]), float(params["offset_seconds"])
+        except (KeyError, ValueError, TypeError):
+            raise ToolError("Indique a escala e o deslocamento.")
+        if not 0.9 <= a <= 1.1:
+            raise ToolError(f"Escala ({a:.5f}) fora do intervalo razoável (0,9–1,1).")
+        if abs(b * 1000) > MAX_SHIFT_MS:
+            raise ToolError("Deslocamento excessivo (máx. 30 minutos).")
+        if abs(a - 1) < 1e-7 and abs(b) < 0.001:
+            raise ToolError("O ajuste é nulo: a legenda já está alinhada.")
+        off = int(round(b * 1000))
+        return (lambda t: int(round(a * t + off))), {"summary": f"Alinhamento com o áudio: tempos × {a:.6f} {b:+.3f} s.", "scale": a, "offset_ms": off}
     if action == "twopoint":
         try:
             i1, i2 = int(params["cue1"]), int(params["cue2"])
