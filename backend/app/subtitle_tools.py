@@ -851,6 +851,7 @@ QUALITY_LABELS = {
     "cps": ("Leitura demasiado rápida (> 25 car/s)", "warn", "durations", "O separador «Durações» alonga o fim destas falas quando há espaço."),
     "short": ("Fala muito curta no ecrã (< 0,7 s)", "warn", "durations", ""),
     "long_line": ("Linhas com mais de 42 caracteres", "warn", "reflow", "O separador «Qualidade» reformata as linhas."),
+    "long_dialogue": ("Diálogo com linha acima de 42 caracteres", "info", None, "O Reformatar não mexe em diálogos («- Olá»): redistribuir daria 3 linhas. Só se resolve à mão ou com uma tradução mais curta."),
     "many_lines": ("Mais de 2 linhas", "warn", "reflow", "Reformatar volta a distribuir o texto por 2 linhas."),
     "watermark": ("Anúncios / marcas de água", "warn", "textfix", "«Limpar texto» → correções comuns remove-os nas primeiras e últimas falas."),
     "hi": ("Marcas para surdos ([ruído], (música))", "info", "textfix", "Opcional: «Limpar texto» → Remover marcas HI."),
@@ -884,7 +885,7 @@ def analyze_quality(text: str, max_len: int = 42, lang: str | None = None) -> di
         if len(b["orig"]) > 2:
             add("many_lines", pos, b)
         if any(_vis_len(l) > max_len for l in b["orig"]):
-            add("long_line", pos, b)
+            add("long_dialogue" if sum(1 for l in b["orig"] if _DIALOG.match(l)) >= 2 else "long_line", pos, b)
         joined = " ".join(b["orig"])
         if (pos <= 3 or pos > len(cues) - 3) and plain and plain < 140 and _WATERMARK.search(joined):
             add("watermark", pos, b)

@@ -54,6 +54,8 @@ def test_quality_report_finds_real_problems():
     assert keys["overlap"] >= 1 and keys["order"] == 1 and keys["long_line"] >= 1 and keys["many_lines"] == 1
     assert keys["cps"] >= 1 and keys["short"] >= 1 and keys["watermark"] == 1
     assert r["cues"] == 5 and not r["clean"]
+    d = analyze_quality("1\n00:00:01,000 --> 00:00:05,000\n- Consegues despachar isso antes do pôr do sol?\n- Com certeza.\n")
+    assert [i["key"] for i in d["issues"]] == ["long_dialogue"] and d["issues"][0]["fix"] is None
     clean = analyze_quality("1\n00:00:01,000 --> 00:00:04,000\nTudo certo\naqui.\n")
     assert clean["clean"] and clean["issues"] == []
 
