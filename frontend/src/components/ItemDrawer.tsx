@@ -95,12 +95,12 @@ function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
     else if (["failed", "cancelled", "interrupted"].includes(j.status)) { toast(j.status === "failed" ? "bad" : "warn", j.status === "failed" ? (j.error || "A tradução falhou.") : "Tradução cancelada."); setAsk(false); setJob(null); }
   }, [jq.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
   const cancel = useMutation({ mutationFn: () => api.post(`/jobs/${job}/cancel`), onError: (e: Error) => toast("bad", e.message) });
-  if (!settings.data?.translation?.enabled || !tr.data?.configured || !targets.length || !sub.text_based || !!sub.forced) return null;
+  if (!settings.data?.translation?.enabled || !tr.data?.configured || !targets.length || !sub.text_based) return null;
   const pct = jq.data?.total ? Math.min(100, (100 * jq.data.progress) / jq.data.total) : 0;
   return (
     <>
       <div className="flex items-center gap-2 flex-wrap">
-        <Languages size={14} className="text-mute" /><span className="text-xs text-mute">Traduzir esta faixa para</span>
+        <Languages size={14} className="text-mute" /><span className="text-xs text-mute">{sub.forced ? "Traduzir esta faixa forçada para" : "Traduzir esta faixa para"}</span>
         <select className="input !h-8 !w-auto !text-xs" value={target} onChange={(e) => setTarget(e.target.value)}>{targets.map((t) => <option key={t}>{t}</option>)}</select>
         <button className="btn-ghost !h-8" onClick={() => setAsk(true)}>Traduzir…</button>
       </div>
@@ -109,6 +109,7 @@ function EmbeddedTranslate({ d, sub }: { d: Detail; sub: Sub }) {
           <button className="btn-danger" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancelar tradução</button></>) : (<><button className="btn-ghost" onClick={() => setAsk(false)}>Cancelar</button>
           <button className="btn-primary" disabled={start.isPending} onClick={() => start.mutate()}>{start.isPending && <Loader2 size={14} className="animate-spin" />}Extrair e traduzir</button></>)}>
         <div className="space-y-3 text-sm">
+          {!!sub.forced && <div className="rounded-lg border border-warn/40 bg-warn/10 p-3 text-xs">Faixa <b>forçada</b>: só tem as partes em língua estrangeira. O resultado é guardado como <b>.forced</b> e <b>não conta</b> como legenda completa do idioma (o filme continua «em falta» se não tiver uma completa).</div>}
           {running && (
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 font-medium"><Loader2 size={15} className="animate-spin text-accent" />{jq.data?.status === "queued" ? `Em fila de espera${jq.data.queue_position ? ` (${jq.data.queue_position} à frente)` : " (a seguir)"}` : jq.data?.current || "A iniciar…"}</div>

@@ -610,3 +610,19 @@ def test_gemini_sends_context_glossary_address_and_repeats_suspects():
     assert first_user["previous_lines_for_context_only"] == []
     second = next(u for _, u in bodies[1:] if u["previous_lines_for_context_only"])
     assert second["previous_lines_for_context_only"][0]["translation"].startswith("PT:")           # a tradução anterior serve de contexto
+
+
+def test_translate_forced_embedded_track_is_saved_as_forced_and_never_counts_as_coverage(client, monkeypatch):
+    from app import ffprobe as fp
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda path, idx, ffmpeg="ffmpeg", timeout=300: make_srt(12, 30_000, lang="en").encode())      # forçada: poucas falas
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en"]}})
+    item = e2(client)
+    sid = client.core.db.one("SELECT id FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1", (item["id"],))["id"]
+    client.core.db.execute("UPDATE subtitles SET forced=1 WHERE id=?", (sid,))
+    j = wait_job(client, client.post(f"/api/media/{item['id']}/translate-embedded/start", json={"subtitle_id": sid, "target": "pt-PT"}).json()["job_id"])
+    assert j["status"] == "done", j
+    dl = j["result"]
+    assert dl["dest_path"].endswith("S01E02.pt-PT.forced.srt") and any("FORÇADA" in n for n in dl["evaluation"]["notes"])
+    inst = client.post(f"/api/downloads/{dl['id']}/install", json={"policy": "fail"}).json()
+    assert inst["dest_path"].endswith(".pt-PT.forced.srt")
+    assert client.get("/api/media", params={"status": "missing"}).json()["total"] >= 1        # a forçada não cobre pt-PT: E02 continua em falta

@@ -853,6 +853,8 @@ class App:
         if left:
             ev.factors.append(Factor(f"{left} falas continuam com ar de por traduzir ou truncadas", -3, "negative"))
             ev.notes.append(f"Mesmo depois de repetidas, {left} falas continuam parecidas com o original ou muito curtas: reveja-as (podem ser nomes, letras de música ou palavras iguais nos dois idiomas).")
+        if r.forced:
+            ev.notes.append("Faixa FORÇADA: só tem as partes em língua estrangeira. Fica guardada como «.forced» e não conta como legenda completa do idioma.")
         if embedded:
             ev.notes.append("Traduzida a partir de uma faixa de legenda embutida no próprio vídeo: os tempos são os dessa faixa (a «referência» é a própria faixa de origem, "
                             "por isso só prova que a tradução manteve os tempos, não que a faixa esteja sincronizada com o áudio).")
