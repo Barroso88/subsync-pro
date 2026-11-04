@@ -730,6 +730,10 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     def sub_cues(sid: int, head: int = Query(30, le=200), tail: int = Query(30, le=200)):
         return core.sub_cues(sid, head, tail)
 
+    @api.get("/subtitles/{sid:int}/quality")
+    def sub_quality(sid: int, max_len: int = 42):
+        return core.sub_quality(sid, max_len)
+
     @api.post("/subtitles/{sid:int}/preview")
     def sub_preview(sid: int, b: ToolIn):
         return core.sub_preview(sid, b.action, b.params)

@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, AudioLines, CheckCircle2, Clock, Film, FileCog, GitCompare, Loader2, Move, RotateCcw, Ruler, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, AudioLines, CheckCircle2, Clock, Film, FileCog, GitCompare, Languages, Loader2, Move, RotateCcw, Ruler, ScanSearch, Trash2, Wand2 } from "lucide-react";
 import { api } from "../api";
 import { cx, fmtTs } from "../lib";
 import { Badge, Modal, Skeleton, Tabs, useToast } from "./ui";
 
-type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "durations" | "text" | "convert" | "delete";
+type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "durations" | "quality" | "ptpt" | "text" | "convert" | "delete";
 interface AudioWin { t: number; offset: number | null; z: number; used?: boolean; speech_pct?: number }
 interface AudioRes { mode: "aligned" | "offset" | "linear" | "inconclusive"; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; z_total?: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
 interface Cue { n: number; start: number; end: number; text: string }
 interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number }[] }
 interface PRow { n: number; old_start: number; new_start: number; new_end: number; text: string }
+interface QIssue { key: string; label: string; severity: "bad" | "warn" | "info"; fix: string | null; hint: string; count: number; examples: { n: number; time: string; text: string }[] }
+interface QualityRes { cues: number; issues: QIssue[]; max_len: number; avg_chars: number; clean: boolean; name: string; encoding: string }
 interface TextChange { n: number; before: string; after: string; tags: string[] }
 interface Preview {
   kind?: "text" | "convert"; stats?: Record<string, number>; changes?: TextChange[];
@@ -45,10 +47,12 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   }, [audioQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
   const audioCancel = useMutation({ mutationFn: () => api.post(`/jobs/${audioJob}/cancel`) });
   const audioUsable = !!audioRes && (audioRes.mode === "offset" || audioRes.mode === "linear");
-  useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false, cps: 17, min_seconds: 1, max_seconds: 7 }); setPv(null); } }, [sub?.id]);
+  useEffect(() => { if (sub) { setTool(sub.isSrt ? "shift" : "convert"); setParams({ seconds: 0, from_fps: 23.976, to_fps: 25, mode: "offset", hi: true, style: false, common: true, uppercase: false, fix_mojibake: true, keep_original: false, cps: 17, min_seconds: 1, max_seconds: 7, max_len: 42, merge: true, vocab: true, spelling: true, gerund: true }); setPv(null); } }, [sub?.id]);
 
   const cues = useQuery({ queryKey: ["sub-cues", sub?.id], queryFn: () => api.get<CuesRes>(`/subtitles/${sub!.id}/cues`), enabled: !!sub && sub.isSrt });
-  const body = () => ({ action: tool === "text" ? "textfix" : tool === "audio" ? "linear" : tool, params: tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
+  const quality = useQuery({ queryKey: ["sub-quality", sub?.id, params.max_len], queryFn: () => api.get<QualityRes>(`/subtitles/${sub!.id}/quality?max_len=${Number(params.max_len) || 42}`), enabled: !!sub && sub.isSrt && tool === "quality", retry: false });
+  const body = () => ({ action: tool === "text" ? "textfix" : tool === "audio" ? "linear" : tool === "quality" ? "reflow" : tool, params: tool === "quality" ? { max_len: Number(params.max_len) || 42, merge: !!params.merge }
+    : tool === "ptpt" ? { vocab: !!params.vocab, spelling: !!params.spelling, gerund: !!params.gerund } : tool === "text" ? { hi: !!params.hi, style: !!params.style, common: !!params.common, uppercase: !!params.uppercase }
     : tool === "convert" ? { fix_mojibake: !!params.fix_mojibake, keep_original: !!params.keep_original }
       : tool === "audio" ? { scale: audioRes?.scale ?? 1, offset_seconds: audioRes?.offset_s ?? 0 }
         : tool === "durations" ? { cps: Number(params.cps), min_seconds: Number(params.min_seconds), max_seconds: Number(params.max_seconds) } : params });
@@ -101,7 +105,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         {sub.canEdit && !pv && tool !== "delete" && <div className="text-xs text-dim">Para ativar «Aplicar», carregue primeiro em <b className="text-mute">Pré-visualizar</b> (se disser que não há nada a alterar, não há nada para aplicar).</div>}
         {!sub.canEdit && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Esta legenda está numa biblioteca só de leitura (ou sem permissão de escrita). Ative a escrita em Definições → Bibliotecas.</div>}
         {sub.canEdit && !sub.isSrt && tool !== "convert" && tool !== "delete" && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />Estas ferramentas só editam legendas SRT. Converta-a primeiro no separador «Converter».</div>}
-        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "audio", label: "Alinhar com o áudio" }, { id: "durations", label: "Durações" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
+        <Tabs value={tool} onChange={setTool} items={[{ id: "shift", label: "Atrasar/adiantar" }, { id: "fps", label: "Frame rate" }, { id: "twopoint", label: "Dois pontos" }, { id: "reference", label: "Sincronizar com referência" }, { id: "audio", label: "Alinhar com o áudio" }, { id: "durations", label: "Durações" }, { id: "quality", label: "Qualidade" }, { id: "ptpt", label: "pt-BR → pt-PT" }, { id: "text", label: "Limpar texto" }, { id: "convert", label: "Converter" }, { id: "delete", label: "Apagar" }]} />
 
         {tool === "shift" && (
           <div className="space-y-2.5">
@@ -161,6 +165,51 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
               <label className="space-y-1 text-xs text-mute">Mínimo por fala (s)<input className="input" type="number" min={0.3} max={3} step={0.1} value={params.min_seconds} onChange={(e) => set("min_seconds", Number(e.target.value))} /></label>
               <label className="space-y-1 text-xs text-mute">Máximo por fala (s)<input className="input" type="number" min={2} max={15} step={0.5} value={params.max_seconds} onChange={(e) => set("max_seconds", Number(e.target.value))} /></label>
             </div>
+          </div>
+        )}
+        {tool === "quality" && (
+          <div className="space-y-3">
+            <div className="text-sm text-mute flex gap-2"><ScanSearch size={16} className="shrink-0 mt-0.5" /><div>Analisa a legenda e mostra <b className="text-fg">problemas reais</b> (falas sobrepostas, linhas compridas, leitura rápida demais, anúncios…). É só um relatório: nada é alterado. Para os problemas de formatação, a ferramenta abaixo reformata as linhas.</div></div>
+            {quality.isLoading && <Skeleton className="h-24" />}
+            {quality.error && <div className="text-sm text-warn flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />{(quality.error as Error).message}</div>}
+            {quality.data && (
+              <div className="space-y-2">
+                {quality.data.clean
+                  ? <div className="card border-ok/40 p-3.5 text-sm flex items-center gap-2 font-medium text-ok"><CheckCircle2 size={16} />Sem problemas encontrados em {quality.data.cues} falas.</div>
+                  : <div className="text-xs text-dim">{quality.data.cues} falas analisadas · média de {quality.data.avg_chars} caracteres por fala · {quality.data.issues.length} tipo(s) de problema.</div>}
+                {quality.data.issues.map((i) => (
+                  <div key={i.key} className="card bg-s2 p-3 space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap text-sm font-medium">
+                      <Badge tone={i.severity === "bad" ? "bad" : i.severity === "warn" ? "warn" : "neutral"}>{i.count}</Badge>{i.label}
+                      {i.fix && i.fix !== "reflow" && <button className="btn-ghost !h-7 !px-2 text-xs ml-auto" onClick={() => setTool(i.fix === "durations" ? "durations" : "text")}>Abrir ferramenta</button>}
+                    </div>
+                    {i.hint && <div className="text-xs text-mute">{i.hint}</div>}
+                    <div className="space-y-0.5">{i.examples.map((e) => <div key={e.n} className="text-xs flex gap-2"><span className="text-dim tabular-nums w-8 shrink-0">#{e.n}</span><span className="font-mono text-mute shrink-0">{e.time}</span><span className="truncate">{e.text}</span></div>)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="card bg-s2 p-3.5 space-y-2.5">
+              <div className="text-sm font-medium">Reformatar linhas</div>
+              <div className="text-xs text-mute">Reparte o texto por <b className="text-fg">no máximo 2 linhas equilibradas</b>, sem partir depois de «de», «o», «que»… e preferindo quebrar na pontuação. Diálogos («- Olá») e posições ({"{\an8}"}) não são tocados. <b className="text-fg">Só mudam as quebras de linha</b>: o texto e os tempos ficam iguais (verificado antes de gravar).</div>
+              <div className="flex items-center gap-3 flex-wrap text-sm">
+                <label className="flex items-center gap-2">Máximo por linha<input className="input !w-20" type="number" min={28} max={60} value={params.max_len} onChange={(e) => set("max_len", Number(e.target.value))} />caracteres</label>
+                <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={!!params.merge} onChange={(e) => set("merge", e.target.checked)} />Juntar em 1 linha o que cabe numa</label>
+              </div>
+            </div>
+          </div>
+        )}
+        {tool === "ptpt" && (
+          <div className="space-y-2.5">
+            <div className="text-sm text-mute flex gap-2"><Languages size={16} className="shrink-0 mt-0.5" /><div>Adapta uma legenda em <b className="text-fg">português do Brasil</b> para <b className="text-fg">português de Portugal</b> com <b className="text-fg">regras fixas</b>, sem IA e sem gastar quota. <b className="text-fg">Os tempos não mudam.</b> Conservador: só mexe no que tem equivalente seguro; palavras ambíguas (por exemplo «fato», «legal») ficam como estão.</div></div>
+            {([
+              ["vocab", "Vocabulário", "ônibus→autocarro, trem→comboio, café da manhã→pequeno-almoço, celular→telemóvel, sorvete→gelado, suco→sumo, garoto/garota→rapaz/rapariga, banheiro→casa de banho, geladeira→frigorífico, equipe→equipa…"],
+              ["spelling", "Grafia e acentos", "bebê→bebé, tênis→ténis, contato→contacto, recepção→receção, infecção→infeção, Antônio→António, vovó→avó, mamãe→mãe…"],
+              ["gerund", "«Estar a» + infinitivo", "«estou fazendo»→«estou a fazer», «está me ouvindo»→«está a ouvir-me». Só depois de formas de «estar»."],
+            ] as const).map(([k, t, d]) => (
+              <label key={k} className="flex items-start gap-3 cursor-pointer card bg-s2 p-3"><input type="checkbox" className="mt-1 accent-[rgb(229,160,13)]" checked={!!params[k]} onChange={(e) => set(k, e.target.checked)} /><span className="text-sm">{t}<span className="block text-xs text-mute">{d}</span></span></label>
+            ))}
+            <div className="text-xs text-dim">Não altera o tratamento («você» → «tu»), a colocação dos pronomes nem a gíria: isso depende do contexto e pede revisão humana. Se quiser uma tradução completa para pt-PT, use o separador de tradução do filme.</div>
           </div>
         )}
         {tool === "audio" && (
@@ -233,12 +282,12 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
           </div>
         )}
 
-        {(tool === "text" || tool === "durations") && pv?.kind === "text" && (
+        {(tool === "text" || tool === "durations" || tool === "quality" || tool === "ptpt") && pv?.kind === "text" && (
           <div className="space-y-3">
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Wand2 size={15} className="text-accent" />{pv.summary}</div>
               {pv.warnings.map((w, i) => <div key={i} className="text-xs text-warn flex gap-1.5"><AlertTriangle size={13} className="shrink-0 mt-0.5" />{w}</div>)}
-              <div className="text-xs text-dim">Mostra as primeiras {pv.changes?.length} alterações. {tool === "durations" ? "Só o fim das falas curtas é alongado: início, texto e ordem ficam iguais (verificado antes de gravar)." : "Os tempos e a ordem das falas ficam iguais (verificado antes de gravar)."}</div>
+              <div className="text-xs text-dim">Mostra as primeiras {pv.changes?.length} alterações. {tool === "durations" ? "Só o fim das falas curtas é alongado: início, texto e ordem ficam iguais (verificado antes de gravar)." : tool === "quality" ? "Só mudam as quebras de linha: texto e tempos ficam iguais (verificado antes de gravar)." : "Os tempos e a ordem das falas ficam iguais (verificado antes de gravar)."}</div>
             </div>
             <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">#</th><th className="th">Antes</th><th className="th">Depois</th></tr></thead>
               <tbody>{pv.changes?.map((c) => (
@@ -264,7 +313,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
             <div className="text-xs text-dim flex gap-1.5"><CheckCircle2 size={13} className="shrink-0 mt-0.5 text-ok" />O original fica em backup e pode ser restaurado (remove o .srt criado e repõe o ficheiro).</div>
           </div>
         )}
-        {tool !== "delete" && tool !== "text" && tool !== "durations" && tool !== "convert" && pv && (
+        {tool !== "delete" && tool !== "text" && tool !== "durations" && tool !== "quality" && tool !== "ptpt" && tool !== "convert" && pv && (
           <div className="space-y-3">
             <div className="card bg-s2 p-3.5 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Clock size={15} className="text-accent" />{pv.summary}</div>
@@ -284,7 +333,7 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
 }
 
 interface Edit { id: number; name: string; action: string; created_at: string; restored_at: string | null; backup_exists: boolean; params: Record<string, any> }
-const ACTION: Record<string, string> = { textfix: "Limpeza de texto", durations: "Durações das falas", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", linear: "Alinhada com o áudio", bazarr_overwrite: "Substituída pelo Bazarr" };
+const ACTION: Record<string, string> = { textfix: "Limpeza de texto", durations: "Durações das falas", reflow: "Linhas reformatadas", ptpt: "Adaptação pt-BR → pt-PT", convert: "Conversão para SRT/UTF-8", shift: "Atrasar/adiantar", fps: "Frame rate", twopoint: "Dois pontos", reference: "Sincronizar com referência", delete: "Movida para backup", linear: "Alinhada com o áudio", bazarr_overwrite: "Substituída pelo Bazarr" };
 
 export function EditHistory({ mediaId }: { mediaId: number }) {
   const qc = useQueryClient();

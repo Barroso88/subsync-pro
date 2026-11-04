@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 from dataclasses import replace
@@ -1501,6 +1502,23 @@ class App:
             if not ok:
                 raise ServiceError("Verificação falhou: o resultado alteraria inícios, texto ou sobreporia falas. Nada foi alterado.", 500)
             return sub, real, data, enc, new_text, stats, changes
+        if mode in ("reflow", "ptpt"):
+            if mode == "ptpt" and (sub.get("lang") or "pt").lower()[:2] != "pt":
+                raise ServiceError("A adaptação pt-BR → pt-PT só se aplica a legendas em português.", 422)
+            try:
+                new_text, stats, changes = (st.reflow_srt if mode == "reflow" else st.adapt_ptpt)(text, params)
+            except st.ToolError as e:
+                raise ServiceError(str(e), e.status)
+            if stats["changed"] == 0:
+                raise ServiceError("Nada a alterar: " + ("as linhas já cumprem o comprimento máximo." if mode == "reflow" else "não encontrei expressões do português do Brasil para adaptar."), 422)
+            new = parse_srt(new_text)
+            ok = len(new.cues) == len(orig.cues) and all((a.start_ms, a.end_ms) == (b.start_ms, b.end_ms) for a, b in zip(orig.cues, new.cues))
+            if ok and mode == "reflow":                                                 # o texto (sem espaços nem tags) tem de ser igual
+                norm = lambda t: re.sub(r"<[^>]+>|\s+", "", t)
+                ok = all(norm(a.text) == norm(b.text) for a, b in zip(orig.cues, new.cues))
+            if not ok:
+                raise ServiceError("Verificação falhou: o resultado alteraria tempos ou perderia texto. Nada foi alterado.", 500)
+            return sub, real, data, enc, new_text, stats, changes
         try:
             new_text, stats, changes = st.transform_srt_text(text, params, sub.get("lang"))
         except st.ToolError as e:
@@ -1517,6 +1535,16 @@ class App:
 
     def _text_preview(self, sid: int, params: dict, mode: str = "textfix") -> dict:
         sub, real, data, enc, new_text, stats, changes = self._text_plan(sid, params, mode)
+        if mode == "reflow":
+            return {"kind": "text", "summary": f"{stats['changed']} de {stats['cues']} falas serão reformatadas (linhas até {params.get('max_len', 42)} caracteres, no máximo 2 linhas).",
+                    "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": {k: v for k, v in stats.items() if k != "by_tag"}, "changes": changes,
+                    "warnings": ["Só mudam as quebras de linha: o texto e os tempos ficam iguais (verificado antes de gravar)."] +
+                    ([f"{stats['by_tag']['continua longa']} falas continuam com uma linha acima do máximo porque o texto não cabe em 2 linhas."] if stats["by_tag"].get("continua longa") else [])}
+        if mode == "ptpt":
+            bt = stats["by_tag"]
+            return {"kind": "text", "summary": f"{stats['changed']} de {stats['cues']} falas serão adaptadas ({', '.join(f'{n} de {k}' for k, n in bt.items())}).",
+                    "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": {k: v for k, v in stats.items() if k != "by_tag"}, "changes": changes,
+                    "warnings": ["Regras fixas (vocabulário, grafia e «estar a + infinitivo»). Não muda o tratamento («você»), a colocação dos pronomes nem gíria: reveja a pré-visualização."]}
         if mode == "durations":
             return {"kind": "text", "summary": f"{stats['changed']} de {stats['cues']} falas ficam mais tempo no ecrã (+{stats['extended_ms'] / 1000:.1f} s no total; só se alonga o fim).",
                     "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": stats, "changes": changes,
@@ -1528,6 +1556,18 @@ class App:
                 "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc, "stats": {k: v for k, v in stats.items() if k != "dropped_positions"},
                 "changes": changes, "warnings": ([f"{stats['dropped']} falas ficam vazias e serão removidas."] if stats["dropped"] else []) +
                 (["«Maiúsculas→frase» perde a capitalização de nomes próprios (reveja a pré-visualização)."] if stats["uppercase"] else [])}
+
+    def sub_quality(self, sid: int, max_len: int = 42) -> dict:
+        sub = self._sub(sid)
+        try:
+            real = require_within(sub["path"], [l["path"] for l in self.libraries()])
+        except PathSecurityError:
+            raise ServiceError("Legenda fora das bibliotecas.", 403)
+        data = Path(real).read_bytes()
+        if not real.lower().endswith(".srt"):
+            raise ServiceError("O relatório de qualidade só analisa legendas SRT. Converta-a primeiro.", 422)
+        text, enc = decode_bytes(data)
+        return {**st.analyze_quality(text, max(28, min(60, int(max_len))), sub.get("lang")), "name": os.path.basename(real), "encoding": enc}
 
     def _convert_plan(self, sid: int, params: dict):
         sub = self._sub(sid)
@@ -1583,7 +1623,7 @@ class App:
         return {"edit_id": eid, "target": os.path.basename(target)}
 
     def sub_preview(self, sid: int, action: str, params: dict) -> dict:
-        if action in ("textfix", "durations"):
+        if action in ("textfix", "durations", "reflow", "ptpt"):
             return self._text_preview(sid, params, action)
         if action == "convert":
             return self._convert_preview(sid, params)
@@ -1622,13 +1662,13 @@ class App:
         except OSError as e:
             raise ServiceError(f"Não foi possível escrever: {e.strerror}", 403)
         eid = self._record_edit(sub, mode, params, backup, st.sha1(data), st.sha1(Path(real).read_bytes()))
-        what = "Durações das falas ajustadas" if mode == "durations" else "Texto da legenda limpo"
+        what = {"durations": "Durações das falas ajustadas", "reflow": "Linhas da legenda reformatadas", "ptpt": "Legenda adaptada para pt-PT"}.get(mode, "Texto da legenda limpo")
         add_event(self.db, "edit", f"{what} ({stats['changed']} falas): {os.path.basename(real)} — cópia em backup #{eid}", "info", sub["media_id"])
         self._rescan_dir(sub)
         return {"edit_id": eid, "changed": stats["changed"], "dropped": stats.get("dropped", 0)}
 
     def sub_apply(self, sid: int, action: str, params: dict, base_hash: str) -> dict:
-        if action in ("textfix", "durations"):
+        if action in ("textfix", "durations", "reflow", "ptpt"):
             return self._text_apply(sid, params, base_hash, action)
         if action == "convert":
             return self._convert_apply(sid, params, base_hash)

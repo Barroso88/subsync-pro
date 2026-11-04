@@ -680,3 +680,332 @@ def fix_durations(text: str, opts: dict | None = None, preview_limit: int = 40) 
     if crlf:
         res = res.replace("\n", "\r\n")
     return res, stats, changes
+
+
+# ---- Qualidade (relatório + reformatar linhas) e adaptação pt-BR → pt-PT -------------------
+
+_TAG_RE = re.compile(r"</?(?:i|b|u)>", re.I)
+_ANY_TAG = re.compile(r"<[^>]+>|\{\\[^}]*\}")
+
+
+def _vis_len(s: str) -> int:
+    return len(_ANY_TAG.sub("", s))
+
+
+def _split_blocks(text: str):
+    """Divide em blocos preservando tudo (o mesmo esquema das outras ferramentas)."""
+    src = text.replace("\r\n", "\n")
+    parts = re.split(r"(\n[ \t]*\n)", src)
+    blocks = []
+    for i in range(0, len(parts), 2):
+        block, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else "")
+        m = TS_LINE.search(block)
+        if not m:
+            blocks.append({"raw": block + sep, "cue": False})
+            continue
+        body = block[m.end():].lstrip("\n")
+        core = body.rstrip("\n")
+        blocks.append({"cue": True, "head": block[:m.end()], "sep": sep, "tail": body[len(core):],
+                       "orig": core.split("\n") if core else [], "s": _to_ms(m.group("a")), "e": _to_ms(m.group("b"))})
+    return blocks, "\r\n" in text
+
+
+def map_cue_lines(text: str, fn: Callable[[list[str]], tuple[list[str], list[str]]], preview_limit: int = 40) -> tuple[str, dict, list[dict]]:
+    """Aplica `fn(linhas) -> (linhas novas, etiquetas)` a cada fala. Os tempos nunca mudam. Falas nunca ficam vazias."""
+    blocks, crlf = _split_blocks(text)
+    cues = [b for b in blocks if b["cue"]]
+    stats = {"cues": len(cues), "changed": 0}
+    changes: list[dict] = []
+    tagcount: dict[str, int] = {}
+    for pos, b in enumerate(cues, 1):
+        new, tags = fn(list(b["orig"]))
+        if not new:
+            new = b["orig"]
+        b["lines"] = new
+        if new != b["orig"]:
+            stats["changed"] += 1
+            for t in set(tags):
+                tagcount[t] = tagcount.get(t, 0) + 1
+            if len(changes) < preview_limit:
+                changes.append({"n": pos, "before": " ⏎ ".join(b["orig"])[:200], "after": " ⏎ ".join(new)[:200], "tags": sorted(set(tags))})
+    stats["by_tag"] = tagcount
+    out = []
+    for b in blocks:
+        if not b["cue"]:
+            out.append(b["raw"])
+        else:
+            out.append(b["head"] + ("\n" + "\n".join(b["lines"]) if b["lines"] else "") + b["tail"] + b["sep"])
+    res = "".join(out)
+    return (res.replace("\n", "\r\n") if crlf else res), stats, changes
+
+
+# -- quebra de linhas --
+
+def _break_two(words: list[str], max_len: int) -> list[str] | None:
+    """Parte as palavras em 2 linhas equilibradas (a de baixo ligeiramente maior). None se não for possível."""
+    lens = [_vis_len(w) for w in words]
+    best, best_score = None, None
+    for k in range(1, len(words)):
+        a = sum(lens[:k]) + k - 1
+        b = sum(lens[k:]) + (len(words) - k) - 1
+        score = abs(a - b) + (0 if a <= b else 2)
+        prev = _ANY_TAG.sub("", words[k - 1])
+        if re.search(r"[.!?…:;]$", prev):
+            score -= 6
+        elif prev.endswith(","):
+            score -= 3
+        nxt = _ANY_TAG.sub("", words[k]).lower().strip("\"'¿¡")
+        if nxt in _NO_START or _ANY_TAG.sub("", words[k - 1]).lower() in _NO_END:
+            score += 5
+        if max(a, b) > max_len:
+            score += 100 + max(a, b)
+        if best_score is None or score < best_score:
+            best, best_score = k, score
+    if best is None:
+        return None
+    return [" ".join(words[:best]), " ".join(words[best:])]
+
+
+_NO_START = {"e", "a", "o", "os", "as", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "que", "se", "um", "uma", "para", "por", "com", "ou", "mas", "my", "the", "of", "to"}
+_NO_END = {"de", "do", "da", "dos", "das", "em", "no", "na", "um", "uma", "o", "a", "os", "as", "e", "ou", "que", "para", "por", "com", "não"}
+_DIALOG = re.compile(r"^\s*(?:<[^>]+>)*\s*[-–—]\s")
+
+
+def _close_open_tags(lines: list[str]) -> list[str]:
+    """Se uma tag <i>/<b>/<u> ficou aberta no fim de uma linha, fecha-a e reabre-a na seguinte."""
+    out, carry = [], ""
+    for i, l in enumerate(lines):
+        l = carry + l
+        opened: list[str] = []
+        for m in _TAG_RE.finditer(l):
+            t = m.group(0).lower()
+            if t[1] == "/":
+                nm = t[2:-1]
+                if nm in opened:
+                    opened.remove(nm)
+            else:
+                opened.append(t[1:-1])
+        if opened and i < len(lines) - 1:
+            l += "".join(f"</{n}>" for n in reversed(opened))
+            carry = "".join(f"<{n}>" for n in opened)
+        else:
+            carry = ""
+        out.append(l)
+    return out
+
+
+def reflow_lines(lines: list[str], max_len: int = 42, merge: bool = True) -> tuple[list[str], list[str]]:
+    joined = " ".join(lines)
+    if not lines or "{\\" in joined or "<font" in joined.lower():
+        return lines, []
+    if len(lines) >= 2 and sum(1 for l in lines if _DIALOG.match(l)) >= 2:
+        return lines, []                                           # diálogo («- Olá» / «- Olá»): cada fala é sua
+    if _DIALOG.match(lines[0]) and len(lines) == 1 and _vis_len(lines[0]) <= max_len:
+        return lines, []
+    plain_words = [w for w in re.split(r"\s+", " ".join(l.strip() for l in lines)) if w]
+    if not plain_words:
+        return lines, []
+    total = sum(_vis_len(w) for w in plain_words) + len(plain_words) - 1
+    too_long = any(_vis_len(l) > max_len for l in lines)
+    if total <= max_len:
+        if len(lines) > 1 and merge:
+            return [_fix_joined_tags(" ".join(l.strip() for l in lines))], ["juntar"]
+        return lines, []
+    if len(lines) <= 2 and not too_long:
+        return lines, []                                           # já cumpre
+    new = _break_two(plain_words, max_len)
+    if new is None:
+        return lines, []
+    new = _close_open_tags([_fix_joined_tags(x) for x in new])
+    if new == lines:
+        return lines, []
+    tags = ["reformatar"]
+    if any(_vis_len(x) > max_len for x in new):
+        tags.append("continua longa")
+    return new, tags
+
+
+def _fix_joined_tags(s: str) -> str:
+    return re.sub(r"</(i|b|u)>\s*<\1>", " ", s, flags=re.I)
+
+
+def reflow_srt(text: str, opts: dict | None = None, preview_limit: int = 40) -> tuple[str, dict, list[dict]]:
+    opts = opts or {}
+    try:
+        max_len = int(opts.get("max_len", 42))
+    except (TypeError, ValueError):
+        raise ToolError("Opções inválidas.")
+    if not 28 <= max_len <= 60:
+        raise ToolError("Comprimento máximo por linha: entre 28 e 60 caracteres.")
+    merge = bool(opts.get("merge", True))
+    return map_cue_lines(text, lambda ls: reflow_lines(ls, max_len, merge), preview_limit)
+
+
+# -- relatório de qualidade --
+
+QUALITY_LABELS = {
+    "overlap": ("Falas sobrepostas", "bad", None, "Uma fala começa antes de a anterior acabar. Corrija com «Sincronizar» ou editando; não há correção automática segura."),
+    "order": ("Falas fora de ordem", "bad", None, "Os tempos recuam. Normalmente indica uma legenda de outro corte do filme."),
+    "bad_duration": ("Duração inválida (fim antes do início)", "bad", None, ""),
+    "empty": ("Falas vazias", "warn", "textfix", "Use «Limpar texto» → correções comuns/HI para as remover."),
+    "cps": ("Leitura demasiado rápida (> 25 car/s)", "warn", "durations", "O separador «Durações» alonga o fim destas falas quando há espaço."),
+    "short": ("Fala muito curta no ecrã (< 0,7 s)", "warn", "durations", ""),
+    "long_line": ("Linhas com mais de 42 caracteres", "warn", "reflow", "O separador «Qualidade» reformata as linhas."),
+    "many_lines": ("Mais de 2 linhas", "warn", "reflow", "Reformatar volta a distribuir o texto por 2 linhas."),
+    "watermark": ("Anúncios / marcas de água", "warn", "textfix", "«Limpar texto» → correções comuns remove-os nas primeiras e últimas falas."),
+    "hi": ("Marcas para surdos ([ruído], (música))", "info", "textfix", "Opcional: «Limpar texto» → Remover marcas HI."),
+}
+
+
+def analyze_quality(text: str, max_len: int = 42, lang: str | None = None) -> dict:
+    blocks, _ = _split_blocks(text)
+    cues = [b for b in blocks if b["cue"]]
+    found: dict[str, list[dict]] = {k: [] for k in QUALITY_LABELS}
+    counts = {k: 0 for k in QUALITY_LABELS}
+
+    def add(key: str, pos: int, b: dict):
+        counts[key] += 1
+        if len(found[key]) < 5:
+            found[key].append({"n": pos, "time": f"{_fmt(b['s'])}", "text": " ⏎ ".join(b["orig"])[:140]})
+
+    prev = None
+    for pos, b in enumerate(cues, 1):
+        plain = _plain_len(b["orig"])
+        dur = b["e"] - b["s"]
+        if b["e"] <= b["s"]:
+            add("bad_duration", pos, b)
+        if not plain:
+            add("empty", pos, b)
+        else:
+            if dur > 0 and plain * 1000 / dur > 25:
+                add("cps", pos, b)
+            if 0 < dur < 700:
+                add("short", pos, b)
+        if len(b["orig"]) > 2:
+            add("many_lines", pos, b)
+        if any(_vis_len(l) > max_len for l in b["orig"]):
+            add("long_line", pos, b)
+        joined = " ".join(b["orig"])
+        if (pos <= 3 or pos > len(cues) - 3) and plain and plain < 140 and _WATERMARK.search(joined):
+            add("watermark", pos, b)
+        if remove_hi(b["orig"]) != b["orig"] and plain:
+            add("hi", pos, b)
+        if prev is not None:
+            if b["s"] < prev["s"]:
+                add("order", pos, b)
+            elif b["s"] < prev["e"] - 20:
+                add("overlap", pos, b)
+        prev = b
+    issues = [{"key": k, "label": QUALITY_LABELS[k][0], "severity": QUALITY_LABELS[k][1], "fix": QUALITY_LABELS[k][2], "hint": QUALITY_LABELS[k][3],
+               "count": counts[k], "examples": found[k]} for k in QUALITY_LABELS if counts[k]]
+    plain_lens = [_plain_len(b["orig"]) for b in cues if _plain_len(b["orig"])]
+    return {"cues": len(cues), "issues": issues, "max_len": max_len,
+            "avg_chars": round(sum(plain_lens) / len(plain_lens), 1) if plain_lens else 0,
+            "clean": not issues}
+
+
+# -- adaptação pt-BR → pt-PT (regras determinísticas; nada de IA, nada de adivinhar) --
+
+def _match_case(src: str, repl: str) -> str:
+    if len(src) > 1 and src.isupper():
+        return repl.upper()
+    if src[:1].isupper():
+        return repl[:1].upper() + repl[1:]
+    return repl
+
+
+def _wb(p: str) -> re.Pattern:
+    return re.compile(r"(?<![\wÀ-ÿ])(?:" + p + r")(?![\wÀ-ÿ])", re.I)
+
+
+# (padrão, substituição). Só substituições de género/número seguras; ambíguas ficam de fora de propósito.
+PTPT_VOCAB: list[tuple[str, str]] = [
+    (r"café da manhã", "pequeno-almoço"), (r"cafés da manhã", "pequenos-almoços"),
+    (r"ônibus", "autocarro"), (r"trens", "comboios"), (r"trem", "comboio"), (r"caminhões", "camiões"), (r"caminhão", "camião"),
+    (r"celulares", "telemóveis"), (r"sorvetes", "gelados"), (r"sorvete", "gelado"), (r"sucos", "sumos"), (r"suco", "sumo"),
+    (r"xícaras", "chávenas"), (r"xícara", "chávena"), (r"açougue", "talho"), (r"bilheteria", "bilheteira"),
+    (r"sobrenomes", "apelidos"), (r"sobrenome", "apelido"), (r"equipes", "equipas"), (r"equipe", "equipa"),
+    (r"garotos", "rapazes"), (r"garoto", "rapaz"), (r"garotas", "raparigas"), (r"garota", "rapariga"),
+    (r"bondes", "elétricos"), (r"bonde", "elétrico"), (r"xingar", "insultar"), (r"xingou", "insultou"), (r"xingando", "a insultar"),
+]
+# artigo/preposição + nome com mudança de género (a geladeira → o frigorífico)
+PTPT_GENDER: list[tuple[str, str]] = [
+    (r"a geladeira", "o frigorífico"), (r"uma geladeira", "um frigorífico"), (r"da geladeira", "do frigorífico"), (r"na geladeira", "no frigorífico"),
+    (r"o banheiro", "a casa de banho"), (r"um banheiro", "uma casa de banho"), (r"do banheiro", "da casa de banho"), (r"no banheiro", "na casa de banho"),
+    (r"ao banheiro", "à casa de banho"), (r"pro banheiro", "para a casa de banho"), (r"para o banheiro", "para a casa de banho"),
+]
+# «celular» só como nome (depois de artigo/possessivo), por causa de «tecido celular»
+PTPT_CELULAR = re.compile(r"(?<![\wÀ-ÿ])((?:o|um|meu|teu|seu|nosso|no|do|ao|pelo|dele|desse|deste|esse|este|aquele)\s+)celular(?![\wÀ-ÿ])", re.I)
+
+PTPT_SPELL: list[tuple[str, str]] = [
+    (r"bebês", "bebés"), (r"bebê", "bebé"), (r"tênis", "ténis"), (r"metrô", "metro"), (r"gêneros", "géneros"), (r"gênero", "género"),
+    (r"gênios", "génios"), (r"gênio", "génio"), (r"fenômenos", "fenómenos"), (r"fenômeno", "fenómeno"),
+    (r"econômicos", "económicos"), (r"econômicas", "económicas"), (r"econômico", "económico"), (r"econômica", "económica"),
+    (r"cômodo", "cómodo"), (r"anônimos", "anónimos"), (r"anônimo", "anónimo"), (r"anônima", "anónima"),
+    (r"gêmeos", "gémeos"), (r"gêmeo", "gémeo"), (r"gêmeas", "gémeas"), (r"gêmea", "gémea"),
+    (r"pênis", "pénis"), (r"vênus", "vénus"), (r"sêmen", "sémen"), (r"Antônio", "António"), (r"Antônia", "Antónia"), (r"Mônica", "Mónica"),
+    (r"contatos", "contactos"), (r"contato", "contacto"), (r"recepções", "receções"), (r"recepção", "receção"),
+    (r"percepções", "perceções"), (r"percepção", "perceção"), (r"decepções", "deceções"), (r"decepção", "deceção"),
+    (r"concepções", "conceções"), (r"concepção", "conceção"), (r"infecções", "infeções"), (r"infecção", "infeção"),
+    (r"aspectos", "aspetos"), (r"aspecto", "aspeto"), (r"vovó", "avó"), (r"vovô", "avô"), (r"mamãe", "mãe"), (r"papai", "pai"),
+]
+_ESTAR = (r"estou|está|estás|estamos|estão|estava|estavas|estávamos|estavam|estive|esteve|estiveram|estarei|estará|estaria|estarão|"
+          r"esteja|estejam|estar|estiver|estivesse|estivessem")
+PTPT_GERUND = re.compile(r"(?<![\wÀ-ÿ])(" + _ESTAR + r")(\s+(?:me|te|se|nos|lhe)(?=\s))?\s+([a-zà-ÿ]{1,}?)(ando|endo|indo)(?![\wÀ-ÿ])", re.I)
+_NOT_GERUND = {"lindo", "findo"}
+_INF = {"ando": "ar", "endo": "er", "indo": "ir"}
+
+
+def _gerund_sub(m: re.Match) -> str:
+    stem, suf = m.group(3), m.group(4).lower()
+    word = (stem + suf).lower()
+    if word in _NOT_GERUND:
+        return m.group(0)
+    inf = stem + _INF[suf]
+    pron = (m.group(2) or "").strip().lower()
+    return f"{m.group(1)} a {inf}" + (f"-{pron}" if pron else "")
+
+
+def adapt_ptpt_line(line: str, cats: set[str]) -> tuple[str, list[str]]:
+    tags: list[str] = []
+    out = line
+    if "vocab" in cats:
+        before = out
+        for p, r in PTPT_GENDER:
+            out = _wb(p).sub(lambda m, r=r: _match_case(m.group(0), r), out)
+        for p, r in PTPT_VOCAB:
+            out = _wb(p).sub(lambda m, r=r: _match_case(m.group(0), r), out)
+        out = PTPT_CELULAR.sub(lambda m: m.group(1) + _match_case("celular", "telemóvel"), out)
+        if out != before:
+            tags.append("vocabulário")
+    if "spelling" in cats:
+        before = out
+        for p, r in PTPT_SPELL:
+            out = _wb(p).sub(lambda m, r=r: _match_case(m.group(0), r), out)
+        if out != before:
+            tags.append("grafia")
+    if "gerund" in cats:
+        before = out
+        out = PTPT_GERUND.sub(_gerund_sub, out)
+        if out != before:
+            tags.append("estar a + infinitivo")
+    return out, tags
+
+
+PTPT_CATS = ("vocab", "spelling", "gerund")
+
+
+def adapt_ptpt(text: str, opts: dict | None = None, preview_limit: int = 40) -> tuple[str, dict, list[dict]]:
+    opts = opts or {}
+    cats = {c for c in PTPT_CATS if opts.get(c, True)}
+    if not cats:
+        raise ToolError("Escolha pelo menos uma categoria.")
+
+    def fn(lines: list[str]):
+        out, tags = [], []
+        for l in lines:
+            n, t = adapt_ptpt_line(l, cats)
+            out.append(n)
+            tags += t
+        return out, tags
+    return map_cue_lines(text, fn, preview_limit)
