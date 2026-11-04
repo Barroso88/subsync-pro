@@ -252,3 +252,19 @@ def test_reference_can_be_an_embedded_track_extracted_on_demand(setup, monkeypat
     setup.core._ref_cache.clear()
     monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: None)
     assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": emb, "mode": "offset"}}).status_code == 422
+
+
+def test_already_aligned_message_shows_evidence(setup, monkeypatch):
+    from app import ffprobe as fp
+    row = setup.core.db.one("SELECT media_id, library_id FROM subtitles WHERE id=?", (setup.pt,))
+    vpath = setup.core.db.one("SELECT path FROM media_items WHERE id=?", (row["media_id"],))["path"]
+    truth = make_cues(150, 3600, seed=2)
+    setup.ptfile.write_text(srt_from(truth, offset_s=0.0), "utf-8")
+    setup.core.scanner.scan_library(dict(setup.core.db.one("SELECT * FROM libraries WHERE id=?", (row["library_id"],))), None, str(setup.dir), force_subs=True)
+    setup.core.db.execute("INSERT INTO subtitles(media_id,library_id,kind,path,stream_index,format,lang,forced,hi,text_based,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                          (row["media_id"], row["library_id"], "embedded", vpath, 3, "subrip", "en", 0, 1, 1, "ok"))
+    emb = setup.core.db.one("SELECT id FROM subtitles WHERE kind='embedded' AND stream_index=3")["id"]
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: srt_from(truth, 0.0).encode())
+    r = setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": emb}})
+    d = r.json()["detail"]
+    assert r.status_code == 400 and "offset ≈ 0" in d and "100 % a menos de 100 ms" in d and "diferença mediana 0 ms" in d and "Maiores diferenças" in d and "por construção" in d

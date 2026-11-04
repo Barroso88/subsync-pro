@@ -173,9 +173,30 @@ def make_mapper(action: str, params: dict, cues: list[Cue], reference: ParsedSub
             return (lambda t: int(round(a * t + b))), {"summary": f"Alinhamento linear com a referência (offset inicial {est['o1'] / 1000:+.2f} s, final {est['o3'] / 1000:+.2f} s).", "estimate": est}
         d = est["offset_ms"]
         if d == 0:
-            raise ToolError("A legenda já está alinhada com a referência (offset ≈ 0).")
+            raise ToolError("A legenda já está alinhada com a referência (offset ≈ 0). " + alignment_evidence(cues, reference.cues))
         return (lambda t: t + d), {"summary": f"Offset estimado de {d / 1000:+.2f} s face à referência.", "estimate": est}
     raise ToolError("Ação desconhecida.")
+
+
+def alignment_evidence(cues: list[Cue], ref: list[Cue]) -> str:
+    """Números concretos para quem desconfia de «já está alinhada»: quantos inícios coincidem e onde estão as maiores diferenças."""
+    from statistics import median
+    rs = sorted(c.start_ms for c in ref if c.text)
+    cs = [(i, c.start_ms) for i, c in enumerate(cues, 1) if c.text]
+    if not rs or not cs:
+        return ""
+    diffs = []
+    for n, t in cs:
+        k = bisect_left(rs, t)
+        near = min((rs[j] for j in (k - 1, k) if 0 <= j < len(rs)), key=lambda x: abs(x - t))
+        diffs.append((abs(t - near), n, t, near))
+    ad = sorted(d[0] for d in diffs)
+    within = lambda ms: round(100 * sum(1 for x in ad if x <= ms) / len(ad))
+    worst = sorted(diffs, reverse=True)[:3]
+    ex = "; ".join(f"fala {n}: {fmt_ms(t)} na legenda vs {fmt_ms(r)} na referência" for _, n, t, r in worst)
+    return (f"Comparados {len(cs)} inícios de falas ({len(rs)} na referência): {within(100)} % a menos de 100 ms, {within(500)} % a menos de 0,5 s, "
+            f"diferença mediana {int(median(ad))} ms, máxima {ad[-1] / 1000:.1f} s. Maiores diferenças: {ex}. "
+            "Nota: uma legenda traduzida a partir desta faixa tem, por construção, os mesmos tempos.")
 
 
 def estimate_sync(candidate: list[Cue], reference: list[Cue]) -> dict:
