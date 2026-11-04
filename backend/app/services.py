@@ -1844,6 +1844,17 @@ class App:
         params = {"subtitle_id": sid, **({"track": track} if track else {}), **({} if rigorous else {"rigorous": False})}
         return self.jobs.submit("audio_sync", f"Alinhar com o áudio: {os.path.basename(sub['path'])}" + (f" (faixa de áudio {track + 1})" if track else ""), params, dedupe=True)
 
+    @staticmethod
+    def _speech_cues(cues) -> list[tuple[int, int]]:
+        """Falas para comparar com o áudio: tira as descrições para surdos ([música], (grita), «NOME:»), que aparecem quando ninguém fala e desviariam a análise."""
+        from . import audio_sync as au
+        out = []
+        for c in cues:
+            lines = st.remove_hi([l for l in c.text.split("\n")])
+            if lines:
+                out.append((c.start_ms, c.end_ms, len(" ".join(lines))))
+        return au.spoken_span(out) if out else au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in cues])
+
     def _audio_core(self, sub: dict, prog, track: int = 0, rigorous: bool = True) -> dict:
         """Analisa uma legenda contra o áudio do vídeo, guarda o resultado (audio_checks) e marca «alinhada» se for o caso."""
         from . import audio_sync as au
@@ -1854,7 +1865,7 @@ class App:
             raise JobError("A legenda está fora das bibliotecas.")
         data = Path(real).read_bytes()
         text, _ = decode_bytes(data)
-        cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parse_srt(text).cues])      # falas que desaparecem cedo demais contam com o tempo de leitura
+        cues = self._speech_cues(parse_srt(text).cues)      # só FALA (sem [música], (suspira), «NOME:»); falas que desaparecem cedo demais contam com o tempo de leitura
         au.PROBE_BIN = self.cfg.ffprobe_bin
         try:
             res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog, track=track, rigorous=rigorous)
@@ -1986,7 +1997,7 @@ class App:
             cues = None
             try:
                 parsed = parse_bytes(Path(row["staged_path"]).read_bytes(), ".srt") if row and row["staged_path"] else None
-                cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parsed.cues]) if parsed and parsed.cues else None
+                cues = self._speech_cues(parsed.cues) if parsed and parsed.cues else None
             except OSError:
                 pass
             item: dict = {"key": key, "download_id": did, "score": dl.get("score")}

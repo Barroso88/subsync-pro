@@ -268,3 +268,12 @@ def test_already_aligned_message_shows_evidence(setup, monkeypatch):
     r = setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": emb}})
     d = r.json()["detail"]
     assert r.status_code == 400 and "offset ≈ 0" in d and "100 % a menos de 100 ms" in d and "diferença mediana 0 ms" in d and "Maiores diferenças" in d and "por construção" in d
+
+
+def test_audio_analysis_ignores_hearing_impaired_descriptions():
+    from app.services import App
+    from app.subtitles.parser import Cue
+    cues = [Cue(1000, 3000, "- Olá, tudo bem?"), Cue(3500, 5000, "[MÚSICA CORAL A TOCAR]"), Cue(6000, 8000, "FATIHA: Quem merece o meu melhor?"), Cue(9000, 10000, "(GEMIDOS CONTINUAM)")]
+    out = App._speech_cues(cues)
+    assert len(out) == 2 and out[0][0] == 1000 and out[1][0] == 6000
+    assert len(App._speech_cues([Cue(0, 1000, "[MÚSICA]")])) == 1                                         # nada restaria: usa tudo em vez de falhar
