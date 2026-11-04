@@ -563,3 +563,50 @@ def test_french_source_is_searched_and_translates_to_both_portuguese_variants(cl
     assert d.translate(["Bonjour, comment ça va ?"], "pt-PT", "fr") == ["PT:Bonjour, comment ça va ?"] and seen == [("FR", "PT-PT")]
     d.translate(["Salut"], "pt-BR", "fr")
     assert seen[-1] == ("FR", "PT-BR")
+
+
+# ---- contexto, glossário, tratamento e verificação final -----------------------------------
+
+def test_extract_names_only_midsentence_repeats():
+    from app.translation import extract_names
+    texts = ["Where is Walter?", "I saw Walter and Skylar there.", "Skylar said hello.", "<i>Then Walter left.</i>", "Hello God, Walter!", "Maybe. Today is Monday.", "Ask Jesse about it, Walter."]
+    names = extract_names(texts)
+    assert "Walter" in names and "God" not in names and "Monday" not in names and "Maybe" not in names
+    assert "Skylar" not in names and extract_names(["Ola Walter"]) == []                  # só 1 ocorrência a meio de frase: não conta
+
+
+def test_suspect_items_flags_untranslated_and_truncated():
+    from app.translation import suspect_items
+    src = ["I really cannot believe that you did that to me", "Okay", "Come on, we have to get out of here right now"]
+    assert suspect_items(src, ["Eu não acredito que me fizeste isto", "Okay", "Come on, we have to get out of here right now"]) == [2]
+    assert suspect_items(src, ["Eu", "Ok", "Vamos"]) == [0, 2]                           # truncadas
+    assert suspect_items(["A short one."], ["```json"]) == []                            # fala curta: sem critério fiável
+
+
+def test_gemini_sends_context_glossary_address_and_repeats_suspects():
+    bodies, state = [], {"retry": 0}
+
+    def h(req: httpx.Request):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"models": []})
+        body = json.loads(req.content)
+        user = json.loads(body["contents"][0]["parts"][0]["text"])
+        bodies.append((body["systemInstruction"]["parts"][0]["text"], user))
+        items = user["items_to_translate"]
+        if any(i == "THIS line stays untranslated at first okay" for i in items):
+            if len(items) == 1 and not state["retry"]:
+                state["retry"] = 1
+            if state["retry"] == 0 or len(items) > 1:
+                return gem_resp([i if i.startswith("THIS") else f"PT:{i}" for i in items])         # 1.ª vez: devolve o original
+        return gem_resp([f"PT:{i}" for i in items])
+    texts = [f"Then Walter walks with Skylar number {i} today" for i in range(45)] + ["THIS line stays untranslated at first okay"] + ["Then Walter and Skylar again here"] * 3
+    g = Gemini("GKEY", "gemini-test", httpx.MockTransport(h))
+    g.address = "informal"
+    g._sleep = lambda s: None
+    out = g.translate(texts, "pt-PT", "en")
+    assert out[45] == "PT:THIS line stays untranslated at first okay" and g.suspect_fixed == 1 and g.suspect_left == 0
+    first_sys, first_user = bodies[0]
+    assert "Walter" in first_user["character_and_place_names"] and "informally" in first_sys and "following_lines_for_context_only" in first_user
+    assert first_user["previous_lines_for_context_only"] == []
+    second = next(u for _, u in bodies[1:] if u["previous_lines_for_context_only"])
+    assert second["previous_lines_for_context_only"][0]["translation"].startswith("PT:")           # a tradução anterior serve de contexto

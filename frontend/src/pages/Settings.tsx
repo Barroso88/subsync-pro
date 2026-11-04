@@ -75,6 +75,9 @@ export default function SettingsPage() {
                   onClick={() => set("translation", { ...d.translation, source_languages: on ? cur.filter((x) => x !== c) : [...cur, c] })}
                   className={`h-6 px-2 rounded-md text-xs border ${on ? "bg-accent/15 border-accent/40 text-accent" : "border-line text-dim"} disabled:opacity-40`} title={meta.data?.languages.find((l) => l.code === c)?.name ?? c}>{c}</button>;
               })}</div></Field>
+            <Field label="Tratamento na tradução (Gemini)" hint="Define se o Gemini trata as pessoas por «tu» ou «você» (e equivalentes) em todo o filme. Por omissão escolhe uma forma para cada par de personagens e mantém-na.">
+              <select className="input" value={d.translation?.address ?? ""} disabled={!d.translation?.enabled} onChange={(e) => set("translation", { ...d.translation, address: e.target.value })}>
+                <option value="">Consistente (o modelo escolhe)</option><option value="informal">Informal (tu)</option><option value="formal">Formal (você)</option></select></Field>
             <Toggle checked={!!d.translation?.auto_fallback} disabled={!d.translation?.enabled} onChange={(v) => set("translation", { ...d.translation, auto_fallback: v })} label="Em lote, traduzir de um idioma de origem se não houver legenda" hint="Fica sempre «por confirmar»: nunca é instalada automaticamente. Consome a quota do motor de tradução." />
             <Toggle checked={d.prefer_forced} onChange={(v) => set("prefer_forced", v)} label="Incluir legendas forçadas nas pesquisas" />
             <Field label="Idiomas a mostrar nas legendas" hint="Só aparência: esconde os chips e as listas de legendas noutros idiomas (não apaga nada nem muda a cobertura). Inclui as legendas de idioma desconhecido (comuns em faixas embutidas sem etiqueta). Com a tradução ativada, o inglês (idioma de origem) aparece sempre que ao filme falte um idioma.">
@@ -99,6 +102,18 @@ export default function SettingsPage() {
             <Field label="Nível mínimo de compatibilidade"><select className="input" value={d.auto_min_tier} onChange={(e) => set("auto_min_tier", e.target.value)}><option value="hash">Apenas confirmada por hash</option><option value="probable">Provável (metadados) ou melhor</option></select></Field>
             <Field label="Máx. itens por execução"><input className="input" type="number" min={1} max={500} value={d.auto_max_per_run} onChange={(e) => set("auto_max_per_run", Number(e.target.value))} /></Field>
             <Toggle checked={d.notify_plex_after_install} onChange={(v) => set("notify_plex_after_install", v)} label="Pedir ao Plex para atualizar o item após instalar" />
+          </div>
+        </Section>
+
+        <Section title="Tratamento automático das legendas novas" hint="Aplica uma cadeia de passos a cada legenda NOVA que a app instalar (descarregada ou traduzida), nunca às que já existem. Cada passo faz backup do original e fica em «Alterações a legendas» do filme (restaurável). A verificação com o áudio só analisa: a correção fica à espera da sua aprovação em «Verificar sincronização».">
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Toggle checked={!!d.pipeline?.enabled} onChange={(v) => set("pipeline", { ...d.pipeline, enabled: v })} label="Ativar o tratamento automático" hint="Desligado por omissão." />
+            <div className="space-y-3">
+              {([["convert", "Converter para SRT em UTF-8", "ASS/VTT → SRT; acentos partidos; sem BOM."], ["clean", "Limpar o texto", "Espaços, pontuação, travessões e anúncios/marcas de água nas primeiras e últimas falas."],
+                ["hi", "Remover marcas para surdos (HI)", "[ruído], (música)…; só se não quiser ver descrições."], ["durations", "Ajustar durações", "Alonga o fim das falas que desaparecem depressa demais."],
+                ["reflow", "Reformatar linhas", "No máximo 2 linhas equilibradas de 42 caracteres."], ["audio", "Verificar a sincronização com o áudio", "Em fila; só analisa e guarda o resultado para aprovação."]] as const).map(([k, t, h]) => (
+                <Toggle key={k} checked={d.pipeline?.[k] ?? (k === "convert" || k === "clean" || k === "audio")} disabled={!d.pipeline?.enabled} onChange={(v) => set("pipeline", { ...d.pipeline, [k]: v })} label={t} hint={h} />))}
+            </div>
           </div>
         </Section>
 

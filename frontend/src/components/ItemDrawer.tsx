@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDownToLine, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench, Upload } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, AudioLines, CheckCircle2, FileText, Layers, Loader2, RefreshCw, Search, ShieldAlert, Star, Download as DlIcon, Info, FolderOpen, Languages, Wrench, Upload } from "lucide-react";
 import { api, uploadFile, Candidate, Download, Evaluation, Item, Issue, Sub } from "../api";
 import { baseName, epCode, fmtDur, fmtSize, providerLabel, resolution, cx } from "../lib";
 import { useLangFilter, useMeta } from "../hooks";
@@ -12,6 +12,8 @@ import { EditHistory, SubToolsModal } from "./SubTools";
 interface Detail extends Item {
   dir: string; size: number; radarr_id?: number | null; subtitles: Sub[]; downloads: Download[]; moviehash: string | null; library_writable: boolean; probe_status: string;
 }
+interface CandAudio { key: string; download_id?: number; error?: string; audio?: { mode: string; offset_s: number | null; agree: number | null; windows_total: number | null; reason?: string | null } }
+const candKey = (c: Candidate) => `${c.result.provider}:${c.result.file_id}`;
 interface SearchRes { results: Candidate[]; errors: { provider: string; message: string; auth?: boolean; rate_limited?: boolean; retry_after?: number }[]; query: { languages: string[]; hash_used: boolean; tried?: string[] } }
 
 export function ItemDrawer({ id, onClose, initialTab = "subs" }: { id: number | null; onClose: () => void; initialTab?: "subs" | "search" }) {
@@ -308,6 +310,26 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
       if (window.confirm(`O Bazarr vai descarregar esta legenda (${c.result.extra?.provider_label ?? c.result.via}) e gravá-la diretamente na pasta do filme, sem pré-visualização.\n\nSe substituir um ficheiro existente, a app guarda uma cópia restaurável no histórico de alterações. Continuar?`)) bzDownload.mutate(c);
     } else prep.mutate(c);
   };
+  const [picked, setPicked] = useState<string[]>([]);
+  const [auJob, setAuJob] = useState<number | null>(null);
+  const [auRes, setAuRes] = useState<{ candidates: CandAudio[]; best: string | null } | null>(null);
+  useEffect(() => { setPicked([]); setAuRes(null); setAuJob(null); }, [res]);
+  const auStart = useMutation({
+    mutationFn: () => api.post<{ job_id: number }>(`/media/${d.id}/candidates/audio-check`, { results: (res?.results ?? []).filter((c) => picked.includes(candKey(c))).map((c) => c.result), lang: c0lang(res, picked) }),
+    onSuccess: (r) => { setAuRes(null); setAuJob(r.job_id); }, onError: (e: Error) => toast("bad", e.message),
+  });
+  const auQ = useQuery({ queryKey: ["cand-audio-job", auJob], enabled: auJob != null,
+    queryFn: () => api.get<{ status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: { candidates: CandAudio[]; best: string | null } | null }>(`/jobs/${auJob}`),
+    refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1500 : false) });
+  const auRunning = auJob != null && (!auQ.data || ["queued", "running"].includes(auQ.data.status));
+  useEffect(() => {
+    const j = auQ.data;
+    if (!j || auJob == null) return;
+    if (j.status === "done" && j.result) { setAuRes(j.result); setAuJob(null); qc.invalidateQueries({ queryKey: ["downloads"] }); }
+    else if (["failed", "cancelled", "interrupted"].includes(j.status)) { toast(j.status === "failed" ? "bad" : "warn", j.error || "Verificação cancelada."); setAuJob(null); }
+  }, [auQ.data?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const auCancel = useMutation({ mutationFn: () => api.post(`/jobs/${auJob}/cancel`) });
+  const usePrepared = async (id: number) => { try { setPrepared(await api.get<Download>(`/downloads/${id}`)); } catch (e) { toast("bad", (e as Error).message); } };
   const prep = useMutation({
     mutationFn: (c: Candidate) => api.post<Download>(`/media/${d.id}/prepare`, { result: c.result, language: c.result.language }),
     onSuccess: (r) => { setPrepared(r); setDetail(null); qc.invalidateQueries({ queryKey: ["downloads"] }); },
@@ -370,7 +392,20 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
         <div className="flex items-center gap-2 text-xs text-mute"><Languages size={14} />Traduzir para
           <select className="input !h-7 !w-auto !text-xs" value={target} onChange={(e) => setTarget(e.target.value)}>{targets.map((t) => <option key={t}>{t}</option>)}</select></div>
       )}
+      {res && res.results.filter((c) => c.result.provider !== "bazarr").length > 1 && (
+        <div className="card bg-s2 p-3.5 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium"><AudioLines size={15} className="text-accent" />Escolher a melhor com o áudio do filme</div>
+          <div className="text-xs text-mute">Marque até 3 candidatas. A app descarrega-as (gasta 1 download da quota de cada) e compara cada uma com a fala do vídeo; a que ficar alinhada já fica pronta a instalar, sem descarregar outra vez. Demora alguns minutos e corre em segundo plano.</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn-primary" disabled={picked.length === 0 || auRunning || auStart.isPending} onClick={() => auStart.mutate()}>{(auRunning || auStart.isPending) ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} />}Verificar {picked.length || ""} marcada{picked.length === 1 ? "" : "s"} com o áudio</button>
+            {auRunning && <button className="btn-ghost" onClick={() => auCancel.mutate()}>Cancelar</button>}
+            {auRunning && <span className="text-xs text-mute">{auQ.data?.status === "queued" ? "Em fila (uma análise de áudio de cada vez)…" : auQ.data?.current || "A iniciar…"}</span>}
+          </div>
+        </div>
+      )}
       {res?.results.map((c, i) => <ResultCard key={i} c={c} meta={meta} onOpen={() => setDetail(c)} onPick={() => pickCandidate(c)} busy={prep.isPending || bzDownload.isPending}
+        checked={picked.includes(candKey(c))} onCheck={c.result.provider !== "bazarr" ? (v) => setPicked((p) => v ? (p.length < 3 ? [...p, candKey(c)] : p) : p.filter((k) => k !== candKey(c))) : undefined}
+        audio={auRes?.candidates.find((a) => a.key === candKey(c))} best={auRes?.best === candKey(c)} onUsePrepared={usePrepared}
         onTranslate={canTranslate && c.result.language !== target && c.result.provider !== "bazarr" ? () => setAskTr(c) : undefined} />)}
       <Modal open={!!askTr} onClose={() => setAskTr(null)} title={`Traduzir para ${target} (${tr.data?.engine === "gemini" ? "Gemini" : "DeepL"})`}
         footer={trRunning ? (<><button className="btn-ghost" onClick={() => setAskTr(null)}>Fechar (continua em segundo plano)</button>
@@ -399,12 +434,32 @@ function SearchPanel({ d, meta }: { d: Detail; meta: any }) {
   );
 }
 
-function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candidate; meta: any; onOpen: () => void; onPick: () => void; busy: boolean; onTranslate?: () => void }) {
+function c0lang(res: SearchRes | null, picked: string[]): string | undefined {
+  const c = res?.results.find((x) => picked.includes(candKey(x)));
+  return (c?.result.language as string | null) ?? undefined;
+}
+
+function AudioBadge({ a, best }: { a: CandAudio; best: boolean }) {
+  if (a.error) return <Badge tone="bad" title={a.error}>Áudio: não verificada</Badge>;
+  const x = a.audio;
+  if (!x) return null;
+  const n = x.windows_total ? ` (${x.agree}/${x.windows_total} janelas)` : "";
+  return <>
+    {best && <Badge tone="ok">★ Melhor com o áudio</Badge>}
+    {x.mode === "aligned" && <Badge tone="ok" title="A legenda coincide com a fala do vídeo em várias janelas. É evidência de áudio, não prova absoluta.">Alinha com o áudio{n}</Badge>}
+    {(x.mode === "offset" || x.mode === "linear") && <Badge tone="warn" title="A legenda parece boa mas desfasada: depois de instalar, use Ferramentas → Alinhar com o áudio.">Desfasada {x.offset_s != null && x.offset_s > 0 ? "−" : "+"}{Math.abs(x.offset_s ?? 0).toFixed(1)} s{n}</Badge>}
+    {x.mode === "inconclusive" && <Badge title={x.reason ?? undefined}>Áudio inconclusivo</Badge>}
+  </>;
+}
+
+function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate, checked, onCheck, audio, best, onUsePrepared }: { c: Candidate; meta: any; onOpen: () => void; onPick: () => void; busy: boolean; onTranslate?: () => void;
+  checked?: boolean; onCheck?: (v: boolean) => void; audio?: CandAudio; best?: boolean; onUsePrepared?: (id: number) => void }) {
   const r = c.result, ev = c.evaluation;
   return (
-    <div className={cx("card p-3.5 space-y-2.5 hover:border-mute/40 transition-colors", ev.compat === "incompatible" && "opacity-70")}>
+    <div className={cx("card p-3.5 space-y-2.5 hover:border-mute/40 transition-colors", ev.compat === "incompatible" && "opacity-70", best && "border-ok/50")}>
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        {onCheck && <input type="checkbox" className="mt-1 accent-[rgb(229,160,13)] shrink-0" checked={!!checked} onChange={(e) => onCheck(e.target.checked)} aria-label="Marcar para verificar com o áudio" title="Marcar para verificar com o áudio (máx. 3)" />}
+        <div className="min-w-0 flex-1">
           <div className="text-sm font-medium break-all">{r.release || r.file_name || "(sem nome de release)"}</div>
           <div className="text-xs text-dim mt-0.5 flex gap-2 flex-wrap items-center">
             <Badge tone="accent">{langName(meta, r.language)}</Badge>{r.provider === "bazarr"
@@ -418,7 +473,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
         </div>
         <ScoreBar score={ev.score} />
       </div>
-      <div className="flex flex-wrap gap-1.5 items-center"><CompatBadge ev={ev} /><SyncBadge ev={ev} />
+      <div className="flex flex-wrap gap-1.5 items-center"><CompatBadge ev={ev} /><SyncBadge ev={ev} />{audio && <AudioBadge a={audio} best={!!best} />}
         {r.hash_match && <Badge tone="ok">Hash coincide</Badge>}
         {r.download_count != null && <Badge title="Downloads no fornecedor"><DlIcon size={10} />{r.download_count}</Badge>}
         {r.rating ? <Badge><Star size={10} />{r.rating}</Badge> : null}
@@ -426,6 +481,7 @@ function ResultCard({ c, meta, onOpen, onPick, busy, onTranslate }: { c: Candida
       </div>
       <div className="flex gap-2 justify-end">
         <button className="btn-ghost" onClick={onOpen}>Detalhes</button>
+        {audio?.download_id && onUsePrepared && <button className={best ? "btn-primary" : "btn-ghost"} onClick={() => onUsePrepared(audio.download_id!)}><CheckCircle2 size={14} />Instalar esta (já descarregada)</button>}
         {onTranslate && <button className="btn-ghost" disabled={busy || ev.compat === "incompatible"} onClick={onTranslate}><Languages size={14} />Traduzir</button>}
         <button className="btn-primary" disabled={busy || ev.compat === "incompatible"} onClick={onPick} title={ev.compat === "incompatible" ? "Provavelmente incompatível" : ""}>
           {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}{r.provider === "bazarr" ? "Descarregar via Bazarr" : "Descarregar e pré-visualizar"}

@@ -652,6 +652,11 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
                 raise HTTPException(400, "Definições de tradução inválidas")
             if v.get("engine", "deepl") not in ("deepl", "gemini") or not isinstance(v.get("gemini_model", ""), str) or len(v.get("gemini_model", "")) > 80:
                 raise HTTPException(400, "Motor ou modelo de tradução inválido")
+            if v.get("address", "") not in ("", "informal", "formal"):
+                raise HTTPException(400, "Tratamento inválido")
+        elif k == "pipeline":
+            if not isinstance(v, dict) or any(kk not in ("enabled", "convert", "clean", "hi", "durations", "reflow", "audio") or not isinstance(vv, bool) for kk, vv in v.items()):
+                raise HTTPException(400, "Definições do pipeline inválidas")
         elif k == "display_languages":
             if (not isinstance(v, dict) or not isinstance(v.get("hide_others", True), bool) or not isinstance(v.get("keep", []), list)
                     or len(v.get("keep", [])) > 60 or any(not isinstance(c, str) or len(c) > 16 for c in v.get("keep", []))):
@@ -741,6 +746,36 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
     @api.post("/subtitles/{sid:int}/apply")
     def sub_apply(sid: int, b: ApplyIn):
         return core.sub_apply(sid, b.action, b.params, b.base_hash)
+
+    class CandidateCheckIn(BaseModel):
+        results: list[dict]
+        lang: str | None = None
+
+    @api.post("/media/{mid:int}/candidates/audio-check", status_code=202)
+    def candidates_audio_check(mid: int, b: CandidateCheckIn):
+        return {"job_id": core.start_candidate_check(mid, b.results, b.lang)}
+
+    class AudioBatchIn(BaseModel):
+        media_ids: list[int] | None = None
+        redo: bool = False
+        limit: int = 200
+
+    @api.get("/audio-checks")
+    def audio_checks(status: str | None = None):
+        return core.audio_checks(status)
+
+    @api.post("/audio-checks/start", status_code=202)
+    def audio_checks_start(b: AudioBatchIn):
+        return core.start_audio_batch(b.media_ids, b.redo, b.limit)
+
+    @api.post("/audio-checks/{sid:int}/apply")
+    def audio_checks_apply(sid: int):
+        return core.audio_check_apply(sid)
+
+    @api.post("/audio-checks/{sid:int}/dismiss")
+    def audio_checks_dismiss(sid: int):
+        core.audio_check_dismiss(sid)
+        return {"ok": True}
 
     @api.post("/subtitles/{sid:int}/audio-sync/start", status_code=202)
     def audio_sync_start(sid: int):

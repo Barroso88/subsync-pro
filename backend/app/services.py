@@ -75,6 +75,8 @@ class App:
         self.jobs.register("bazarr_batch", self._job_bazarr_batch)
         self.jobs.register("convert_scan", self._job_convert_scan)
         self.jobs.register("audio_sync", self._job_audio_sync, lane="audio")      # leitura de áudio dos vídeos: uma de cada vez
+        self.jobs.register("audio_batch", self._job_audio_batch, lane="audio")
+        self.jobs.register("candidate_check", self._job_candidate_check, lane="audio")
         self.jobs.register("translate", self._job_translate, lane="translate")   # uma tradução de cada vez (limites dos serviços)
         self.jobs.register("convert_batch", self._job_convert_batch)
 
@@ -733,7 +735,9 @@ class App:
             raise ServiceError(f"API key do {'Gemini' if name == 'gemini' else 'DeepL'} não configurada (Fornecedores → Tradução).", 400)
         if name == "gemini":
             ks = self._gemini_keys()
-            return Gemini(ks[0], self.settings.get("translation").get("gemini_model") or "", self.transport, extra_keys=ks[1:])
+            g = Gemini(ks[0], self.settings.get("translation").get("gemini_model") or "", self.transport, extra_keys=ks[1:])
+            g.address = {"informal": "informal", "formal": "formal"}.get(self.settings.get("translation").get("address") or "", "")
+            return g
         return DeepL(key, self.transport)
 
     def _targets(self) -> list[str]:
@@ -841,6 +845,13 @@ class App:
         if kept:
             ev.factors.append(Factor(f"{kept} falas ficaram no idioma original (recusadas pelo modelo)", -5, "negative"))
             ev.notes.append(f"{kept} falas não foram traduzidas pelo modelo e mantêm o idioma original: reveja.")
+        left = getattr(deepl, "suspect_left", 0)
+        fixed = getattr(deepl, "suspect_fixed", 0)
+        if fixed:
+            ev.notes.append(f"Verificação final: {fixed} falas que pareciam por traduzir ou truncadas foram repetidas e melhoraram.")
+        if left:
+            ev.factors.append(Factor(f"{left} falas continuam com ar de por traduzir ou truncadas", -3, "negative"))
+            ev.notes.append(f"Mesmo depois de repetidas, {left} falas continuam parecidas com o original ou muito curtas: reveja-as (podem ser nomes, letras de música ou palavras iguais nos dois idiomas).")
         if embedded:
             ev.notes.append("Traduzida a partir de uma faixa de legenda embutida no próprio vídeo: os tempos são os dessa faixa (a «referência» é a própria faixa de origem, "
                             "por isso só prova que a tradução manteve os tempos, não que a faixa esteja sincronizada com o áudio).")
@@ -982,12 +993,74 @@ class App:
                 self.scanner.scan_library(lib, None, media["dir"], force=False)
             except Exception as e:  # noqa: BLE001
                 log.warning("reanálise após instalar: %s", scrub(str(e)))
+            self._pipeline_after_install(media, final)
             if self.settings.get("notify_plex_after_install"):
                 try:
                     self.refresh_plex(media["id"])
                 except IntegrationError as e:
                     add_event(self.db, "integration", f"Plex não notificado: {e}", "warning", media["id"])
         return self.get_download(did)
+
+    # ---- pipeline automático ao instalar (só legendas novas; cada passo tem backup e é restaurável) ----
+    PIPELINE_STEPS = ("convert", "clean", "hi", "durations", "reflow", "audio")
+
+    def _pipeline_after_install(self, media: dict, final: str) -> list[str]:
+        cfg = self.settings.get("pipeline") or {}
+        if not cfg.get("enabled"):
+            return []
+        try:
+            return self._pipeline(media, final, cfg)
+        except Exception as e:  # noqa: BLE001 - o pipeline nunca pode estragar uma instalação que correu bem
+            log.warning("pipeline após instalar: %s", scrub(str(e)))
+            add_event(self.db, "edit", f"Pipeline automático falhou em {os.path.basename(final)}: {e}", "warning", media["id"])
+            return []
+
+    def _pipeline(self, media: dict, final: str, cfg: dict) -> list[str]:
+        row = self.db.one("SELECT id FROM subtitles WHERE path=? AND present=1 AND kind='external'", (final,))
+        if not row:
+            return []
+        sid = row["id"]
+        done: list[str] = []
+
+        def run(action: str, params: dict, label: str) -> None:
+            nonlocal sid
+            try:
+                pv = self.sub_preview(sid, action, params)
+            except ServiceError as e:
+                if e.status not in (422, 400):
+                    done.append(f"{label}: não foi possível ({e})")
+                return                                              # 422 = nada a alterar
+            res = self.sub_apply(sid, action, params, pv["base_hash"])
+            if action == "convert" and res.get("target"):
+                new = self.db.one("SELECT id FROM subtitles WHERE path=? AND present=1", (os.path.join(os.path.dirname(final), res["target"]),))
+                if new:
+                    sid = new["id"]
+            n = (pv.get("stats") or {}).get("changed")
+            done.append(label + (f" ({n} falas)" if n else ""))
+
+        if cfg.get("convert", True):
+            run("convert", {"fix_mojibake": True, "keep_original": False}, "convertida para SRT/UTF-8")
+        sub = self.db.one("SELECT path FROM subtitles WHERE id=? AND present=1", (sid,))
+        if not sub or not sub["path"].lower().endswith(".srt"):
+            return self._pipeline_report(media, final, done)
+        if cfg.get("clean", True) or cfg.get("hi"):
+            run("textfix", {"common": bool(cfg.get("clean", True)), "hi": bool(cfg.get("hi")), "style": False, "uppercase": False}, "texto limpo")
+        if cfg.get("durations"):
+            run("durations", {}, "durações ajustadas")
+        if cfg.get("reflow"):
+            run("reflow", {}, "linhas reformatadas")
+        if cfg.get("audio", True) and media.get("duration"):
+            try:
+                self.start_audio_sync(sid)
+                done.append("verificação com o áudio em fila (o resultado fica à espera da sua aprovação)")
+            except ServiceError:
+                pass
+        return self._pipeline_report(media, final, done)
+
+    def _pipeline_report(self, media: dict, final: str, done: list[str]) -> list[str]:
+        if done:
+            add_event(self.db, "edit", f"Pipeline automático em {os.path.basename(final)}: " + "; ".join(done) + ". Cada passo tem cópia do original em «Alterações a legendas».", "info", media["id"])
+        return done
 
     # ---- origem das legendas (app / Bazarr / enviada / traduzida) ------------------------
     PROVIDER_LABEL = {"opensubtitles": "OpenSubtitles", "opensubtitlescom": "OpenSubtitles.com", "opensubtitlesorg": "OpenSubtitles.org", "subdl": "SubDL", "subtitlecat": "Subtitlecat",
@@ -1635,7 +1708,10 @@ class App:
 
     def _backup(self, real: str, sid: int) -> str:
         self.cfg.backup_dir.mkdir(parents=True, exist_ok=True)
-        dst = self.cfg.backup_dir / f"{int(time.time())}-{sid}-{sanitize_filename(os.path.basename(real))}"
+        base = f"{int(time.time())}-{sid}-{sanitize_filename(os.path.basename(real))}"
+        dst, n = self.cfg.backup_dir / base, 1
+        while dst.exists():                                       # vários passos seguidos na mesma legenda (pipeline) nunca se sobrepõem
+            dst, n = self.cfg.backup_dir / f"{n}-{base}", n + 1
         shutil.copy2(real, dst)
         return str(dst)
 
@@ -1701,32 +1777,212 @@ class App:
             raise ServiceError("O vídeo não está acessível ou não tem duração conhecida (reanalise o filme).", 422)
         return self.jobs.submit("audio_sync", f"Alinhar com o áudio: {os.path.basename(sub['path'])}", {"subtitle_id": sid}, dedupe=True)
 
-    def _job_audio_sync(self, ctx: JobContext, p: dict) -> dict:
+    def _audio_core(self, sub: dict, prog) -> dict:
+        """Analisa uma legenda contra o áudio do vídeo, guarda o resultado (audio_checks) e marca «alinhada» se for o caso."""
         from . import audio_sync as au
-        sub = self._sub(p["subtitle_id"])
         m = self.db.one("SELECT path,duration FROM media_items WHERE id=?", (sub["media_id"],))
         try:
             real = require_within(sub["path"], [l["path"] for l in self.libraries()])
         except PathSecurityError:
             raise JobError("A legenda está fora das bibliotecas.")
-        text, _ = decode_bytes(Path(real).read_bytes())
+        data = Path(real).read_bytes()
+        text, _ = decode_bytes(data)
         cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parse_srt(text).cues])      # falas que desaparecem cedo demais contam com o tempo de leitura
-
-        def prog(i: int, total: int, msg: str) -> None:
-            if ctx.total == 0:
-                ctx.set_total(total + 1)
-            ctx.step(msg, inc=1 if i > 0 else 0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
         au.PROBE_BIN = self.cfg.ffprobe_bin
         try:
             res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog)
         except au.AudioSyncError as e:
             raise JobError(str(e))
-        res["subtitle_id"], res["base_hash"] = sub["id"], st.sha1(Path(real).read_bytes())
+        res["subtitle_id"], res["base_hash"] = sub["id"], st.sha1(data)
+        self._save_audio_check(sub, res)
         if res["mode"] == "aligned":                       # prova real (áudio): marca como alinhada
             self.db.execute("UPDATE subtitles SET sync_status='aligned', sync_detail=? WHERE id=?",
                             (f"Alinhada com o áudio ({res['agree']}/{res['windows_total']} janelas concordam)", sub["id"]))
         add_event(self.db, "edit", f"Alinhamento com o áudio de {os.path.basename(sub['path'])}: {res['mode']} ({res['agree']}/{res['windows_total']} janelas)", "info", sub["media_id"])
         return res
+
+    def _save_audio_check(self, sub: dict, res: dict) -> None:
+        status = {"aligned": "aligned", "offset": "pending", "linear": "pending"}.get(res["mode"], "inconclusive")
+        self.db.execute("INSERT OR REPLACE INTO audio_checks(subtitle_id,media_id,path,mode,status,result,base_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (sub["id"], sub["media_id"], sub["path"], res["mode"], status, json.dumps(res), res.get("base_hash"), now()))
+
+    def _job_audio_sync(self, ctx: JobContext, p: dict) -> dict:
+        sub = self._sub(p["subtitle_id"])
+
+        def prog(i: int, total: int, msg: str) -> None:
+            if ctx.total == 0:
+                ctx.set_total(total + 1)
+            ctx.step(msg, inc=1 if i > 0 else 0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
+        return self._audio_core(sub, prog)
+
+    # ---- verificação de sincronização em lote (resultados ficam à espera de aprovação) ------------
+    def audio_batch_candidates(self, media_ids: list[int] | None = None, redo: bool = False) -> list[dict]:
+        langs = set(self.settings.primary_langs()) | set((self.settings.get("display_languages") or {}).get("keep", []))
+        q = ("SELECT s.id,s.path,s.lang,s.media_id,s.content_hash,m.title,m.year,m.series_title,m.season,m.episode,m.path AS vpath FROM subtitles s JOIN media_items m ON m.id=s.media_id "
+             "WHERE s.kind='external' AND s.present=1 AND s.status='ok' AND lower(s.path) LIKE '%.srt' AND s.association='certain' AND m.duration>0 "
+             "AND s.sync_status IN ('plausible','unchecked','suspect')")
+        args: list = []
+        if media_ids:
+            q += f" AND s.media_id IN ({','.join('?' * len(media_ids))})"
+            args += list(media_ids)
+        out = []
+        for r in self.db.query(q + " ORDER BY m.title, s.id", tuple(args)):
+            if r["lang"] not in langs:
+                continue
+            ck = self.db.one("SELECT base_hash FROM audio_checks WHERE subtitle_id=?", (r["id"],))
+            if ck and not redo and ck["base_hash"] == r["content_hash"]:
+                continue                                                   # já analisada com este conteúdo
+            if not os.path.isfile(r["vpath"]):
+                continue
+            out.append(dict(r))
+        return out
+
+    def start_audio_batch(self, media_ids: list[int] | None = None, redo: bool = False, limit: int = 200) -> dict:
+        items = self.audio_batch_candidates(media_ids, redo)[:max(1, min(int(limit), 500))]
+        if not items:
+            raise ServiceError("Nada para verificar: todas as legendas por confirmar já foram analisadas (ou os vídeos não estão acessíveis).", 422)
+        jid = self.jobs.submit("audio_batch", f"Verificar sincronização com o áudio ({len(items)} legendas)", {"subtitle_ids": [i["id"] for i in items]})
+        return {"job_id": jid, "count": len(items)}
+
+    def _job_audio_batch(self, ctx: JobContext, p: dict) -> dict:
+        ids = p["subtitle_ids"]
+        ctx.set_total(len(ids))
+        out = {"analysed": 0, "aligned": 0, "pending": 0, "inconclusive": 0, "errors": 0}
+        for n, sid in enumerate(ids, 1):
+            ctx.check_cancel()
+            try:
+                sub = self._sub(sid)
+            except ServiceError:
+                ctx.step(inc=1, force=True)
+                continue
+            name = os.path.basename(sub["path"])
+            label = f"{n} de {len(ids)}: {name}"
+
+            def prog(i: int, total: int, msg: str, label=label) -> None:
+                ctx.step(label, inc=0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
+            try:
+                res = self._audio_core(sub, prog)
+                out["analysed"] += 1
+                out[{"aligned": "aligned", "offset": "pending", "linear": "pending"}.get(res["mode"], "inconclusive")] += 1
+            except JobCancelled:
+                raise
+            except JobError as e:
+                out["errors"] += 1
+                self.db.execute("INSERT OR REPLACE INTO audio_checks(subtitle_id,media_id,path,mode,status,result,base_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                                (sid, sub["media_id"], sub["path"], "error", "error", json.dumps({"reason": str(e)}), None, now()))
+            ctx.step(label, inc=1, message=f"{n} de {len(ids)} verificadas", force=True)
+        return out
+
+    # ---- escolher o melhor candidato com evidência do áudio ----------------------------------
+    @staticmethod
+    def _cand_key(r: dict) -> str:
+        return f"{r.get('provider')}:{r.get('file_id')}"
+
+    def start_candidate_check(self, media_id: int, results: list[dict], lang: str | None = None) -> int:
+        media = self.media_dict(media_id)
+        if not isinstance(results, list) or not 1 <= len(results) <= 3:
+            raise ServiceError("Escolha entre 1 e 3 candidatas (cada uma gasta um download da quota do fornecedor).", 422)
+        for r in results:
+            if not isinstance(r, dict) or r.get("provider") not in PROVIDERS:
+                raise ServiceError("Resultado inválido.", 422)
+        if not media.get("duration") or not os.path.isfile(media["path"]):
+            raise ServiceError("O vídeo não está acessível ou não tem duração conhecida (reanalise o filme).", 422)
+        return self.jobs.submit("candidate_check", f"Verificar candidatas com o áudio: {media['title']}",
+                                {"media_id": media_id, "results": results, "lang": lang})
+
+    def _job_candidate_check(self, ctx: JobContext, p: dict) -> dict:
+        from . import audio_sync as au
+        media = self.media_dict(p["media_id"])
+        results = p["results"]
+        memo: dict[tuple, Any] = {}
+
+        def extract(path, t0, d, ff, *a):                       # o áudio do filme lê-se UMA vez e serve todas as candidatas
+            if (t0, d) not in memo:
+                memo[(t0, d)] = au.extract_window(path, t0, d, ff)
+            return memo[(t0, d)]
+        au.PROBE_BIN = self.cfg.ffprobe_bin
+        ctx.set_total(len(results))
+        out = []
+        for n, r in enumerate(results, 1):
+            ctx.check_cancel()
+            key = self._cand_key(r)
+            label = f"Candidata {n} de {len(results)}"
+            ctx.step(f"{label}: a descarregar…", inc=0, message="A descarregar a legenda", force=True)
+            try:
+                dl = self.prepare(p["media_id"], r, p.get("lang"))
+            except ServiceError as e:
+                out.append({"key": key, "error": str(e)})
+                ctx.step(label, inc=1, force=True)
+                continue
+            did = dl["id"]
+            row = self.db.one("SELECT staged_path FROM downloads WHERE id=?", (did,))
+            cues = None
+            try:
+                parsed = parse_bytes(Path(row["staged_path"]).read_bytes(), ".srt") if row and row["staged_path"] else None
+                cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parsed.cues]) if parsed and parsed.cues else None
+            except OSError:
+                pass
+            item: dict = {"key": key, "download_id": did, "score": dl.get("score")}
+            if not cues:
+                item["error"] = "Não foi possível ler as falas da legenda descarregada."
+            else:
+                def prog(i: int, total: int, msg: str, label=label) -> None:
+                    ctx.step(f"{label}: {msg}", inc=0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
+                try:
+                    res = au.analyze(media["path"], cues, float(media["duration"]), self.cfg.ffmpeg_bin, prog, extract=extract)
+                    summ = {k: res.get(k) for k in ("mode", "offset_s", "scale", "agree", "windows_total", "windows_clear", "confidence", "z_total", "reason")}
+                    item["audio"] = summ
+                    ev = jloads(self.db.one("SELECT evaluation FROM downloads WHERE id=?", (did,))["evaluation"], {}) or {}
+                    ev["audio"] = summ
+                    self.db.execute("UPDATE downloads SET evaluation=? WHERE id=?", (json.dumps(ev), did))
+                except au.AudioSyncError as e:
+                    item["error"] = str(e)
+            out.append(item)
+            ctx.step(label, inc=1, force=True)
+        ok = [i for i in out if i.get("audio") and i["audio"]["mode"] in ("aligned", "offset", "linear")]
+        ok.sort(key=lambda i: (i["audio"]["mode"] != "aligned", -(i["audio"].get("agree") or 0), abs(i["audio"].get("offset_s") or 0)))
+        best = ok[0]["key"] if ok else None
+        add_event(self.db, "download", f"Candidatas verificadas com o áudio ({len(out)}): " + ", ".join(f"{i['key']}={i.get('audio', {}).get('mode', 'erro')}" for i in out), "info", p["media_id"])
+        return {"candidates": out, "best": best}
+
+    def audio_checks(self, status: str | None = None) -> dict:
+        q = ("SELECT a.*, m.title, m.year, m.series_title, m.season, m.episode, s.lang, s.sync_status AS cur_sync, s.content_hash FROM audio_checks a "
+             "LEFT JOIN media_items m ON m.id=a.media_id LEFT JOIN subtitles s ON s.id=a.subtitle_id")
+        args: tuple = ()
+        if status:
+            q += " WHERE a.status=?"
+            args = (status,)
+        items = []
+        for r in self.db.query(q + " ORDER BY a.created_at DESC LIMIT 500", args):
+            res = jloads(r["result"], {}) or {}
+            stale = r["content_hash"] is not None and r["base_hash"] is not None and r["content_hash"] != r["base_hash"]
+            items.append({"subtitle_id": r["subtitle_id"], "media_id": r["media_id"], "title": r["title"], "year": r["year"], "series_title": r["series_title"],
+                          "season": r["season"], "episode": r["episode"], "name": os.path.basename(r["path"] or ""), "lang": r["lang"], "mode": r["mode"], "status": r["status"],
+                          "stale": stale, "created_at": r["created_at"], "decided_at": r["decided_at"],
+                          "offset_s": res.get("offset_s"), "scale": res.get("scale"), "agree": res.get("agree"), "windows_total": res.get("windows_total"),
+                          "windows_clear": res.get("windows_clear"), "reason": res.get("reason"), "z_total": res.get("z_total")})
+        counts = {r["status"]: r["n"] for r in self.db.query("SELECT status, COUNT(*) AS n FROM audio_checks GROUP BY status")}
+        waiting = len(self.audio_batch_candidates())
+        return {"items": items, "counts": counts, "unchecked": waiting}
+
+    def audio_check_apply(self, sid: int) -> dict:
+        r = self.db.one("SELECT * FROM audio_checks WHERE subtitle_id=?", (sid,))
+        if not r or r["status"] != "pending":
+            raise ServiceError("Não há nenhuma correção pendente para esta legenda.", 404)
+        res = jloads(r["result"], {}) or {}
+        params = {"scale": res.get("scale", 1), "offset_seconds": res.get("offset_s", 0)}
+        out = self.sub_apply(sid, "linear", params, r["base_hash"])      # verifica que o ficheiro é o analisado (409 se mudou), faz backup e grava
+        self.db.execute("UPDATE audio_checks SET status='applied', decided_at=? WHERE subtitle_id=?", (now(), sid))
+        new = self.db.one("SELECT id FROM subtitles WHERE path=? AND present=1", (r["path"],))
+        if new:
+            self.db.execute("UPDATE subtitles SET sync_status='aligned', sync_detail=? WHERE id=?",
+                            (f"Corrigida com o áudio (aprovada): desvio {res.get('offset_s', 0):+.2f} s, {res.get('agree')}/{res.get('windows_total')} janelas concordam", new["id"]))
+        return out
+
+    def audio_check_dismiss(self, sid: int) -> None:
+        if not self.db.one("SELECT 1 FROM audio_checks WHERE subtitle_id=?", (sid,)):
+            raise ServiceError("Resultado não encontrado.", 404)
+        self.db.execute("UPDATE audio_checks SET status='dismissed', decided_at=? WHERE subtitle_id=?", (now(), sid))
 
     def sub_delete(self, sid: int) -> dict:
         """Remove a legenda da pasta mas guarda uma cópia (restaurável). Nunca apaga vídeos."""

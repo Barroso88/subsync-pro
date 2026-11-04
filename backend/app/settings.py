@@ -44,8 +44,12 @@ DEFAULTS: dict[str, Any] = {
         "source_languages": ["en"],        # idiomas de origem aceites
         "engine": "deepl",                 # deepl | gemini
         "gemini_model": "",                # vazio = automático (Flash mais recente disponível para a chave)
+        "address": "",                     # tratamento: "" (consistente, o modelo escolhe) | "informal" (tu) | "formal" (você)
     },
     "audio_sync": {"enabled": False},
+    # tratamento automático de cada legenda NOVA instalada pela app (descarregada, traduzida). Desligado por omissão.
+    # Cada passo faz backup e fica registado em «Alterações a legendas»; o áudio só analisa (nunca corrige sozinho).
+    "pipeline": {"enabled": False, "convert": True, "clean": True, "hi": False, "durations": False, "reflow": False, "audio": True},
 }
 
 

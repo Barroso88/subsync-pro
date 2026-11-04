@@ -123,6 +123,46 @@ SRC_NAMES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "
 GEMINI_CHUNK = 40        # falas por pedido (contexto suficiente sem respostas demasiado longas)
 
 
+_NAME_TOKEN = re.compile(r"(?<![\w'’])([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]{2,})")
+_NAME_STOP = {"God", "Christmas", "Mister", "Missus", "Miss", "Sir", "Lord", "Lady", "Mom", "Dad", "Mum", "Mother", "Father", "Doctor", "President", "Captain", "Detective",
+              "Officer", "Agent", "Sergeant", "Judge", "Professor", "Yes", "Yeah", "Okay", "Hey", "Please", "Thanks", "Thank", "The", "And", "But", "Dios", "Dieu", "Gott",
+              "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "June", "July", "August", "September",
+              "October", "November", "December", "English", "American", "French", "German", "Spanish", "Italian", "Brazilian", "Portuguese"}
+GLOSSARY_MAX = 60
+
+
+def extract_names(texts: list[str], limit: int = GLOSSARY_MAX) -> list[str]:
+    """Nomes próprios (personagens, lugares) que aparecem pelo menos 2 vezes a meio de uma frase: vão ao modelo para ficarem sempre iguais."""
+    count: dict[str, int] = {}
+    for t in texts:
+        plain = re.sub(r"<[^>]+>|\{\\[^}]*\}", "", t)
+        for line in plain.split("\n"):
+            line = re.sub(r"^\s*[-–—]\s*", "", line)
+            for m in _NAME_TOKEN.finditer(line):
+                before = line[:m.start()].rstrip()
+                if not before or before[-1] in ".!?…:\"“”¿¡(♪":
+                    continue                                    # início de frase: maiúscula normal, não prova que seja um nome
+                w = m.group(1).rstrip("-'’")
+                if w in _NAME_STOP or w.upper() == w:
+                    continue
+                count[w] = count.get(w, 0) + 1
+    names = [w for w, n in sorted(count.items(), key=lambda kv: (-kv[1], kv[0])) if n >= 2]
+    return names[:limit]
+
+
+def suspect_items(src: list[str], out: list[str]) -> list[int]:
+    """Índices de traduções que parecem por traduzir, truncadas ou com lixo de formatação (para repetir só essas)."""
+    bad = []
+    for i, (a, b) in enumerate(zip(src, out)):
+        la = len(re.sub(r"\W+", "", a))
+        if la < 12 or len(a.split()) < 3:
+            continue
+        lb = len(re.sub(r"\W+", "", b))
+        if b.strip().lower() == a.strip().lower() or lb < 0.3 * la or "```" in b or re.match(r'^\s*[\[{]\s*"', b):
+            bad.append(i)
+    return bad
+
+
 class Gemini:
     """Tradução por modelo de IA. Só texto; devolve SEMPRE o mesmo número de itens (valida e subdivide)."""
     SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in
@@ -160,6 +200,10 @@ class Gemini:
         self.model = re.sub(r"[^A-Za-z0-9._-]", "", model or "")      # vazio = automático (o Flash mais recente que a chave pode usar)
         self.base = "https://generativelanguage.googleapis.com/v1beta"
         self.untranslated = 0           # itens que o modelo recusou/falhou e ficaram no original
+        self.suspect_left = 0           # itens que, mesmo repetidos, continuam com ar de por traduzir/truncados
+        self.suspect_fixed = 0          # itens que a verificação final repetiu e melhorou
+        self.glossary: list[str] = []
+        self.address = ""               # "" (consistente, o modelo escolhe) | "informal" (tu) | "formal" (você)
         self._sleep = time.sleep
         # escada de compatibilidade: 0 = completo (instrução de sistema + JSON + sem raciocínio + sem filtros); 1 = sem «thinkingConfig»;
         # 2 = sem «safetySettings»; 3 = instruções na mensagem e JSON lido do texto. Sobe quando o modelo responde 400 e lembra-se.
@@ -225,13 +269,29 @@ class Gemini:
             self.model = "gemini-flash-latest"       # alias oficial do Flash mais recente
         Gemini._AUTO[self.key] = (time.time(), self.model)
 
-    def _call(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str]) -> list[str] | None:
+    _next: list[str] = []
+
+    def _address_rule(self, target: str) -> str:
+        if self.address == "informal":
+            return "Always address people informally (tu/tú/du/vous-less informal forms), never the formal form."
+        if self.address == "formal":
+            return "Always address people formally (você/usted/vous/Sie/Lei), never the informal form."
+        return "Choose one form of address (informal «tu» or formal «você» and equivalents) for each pair of speakers and keep it for the whole film."
+
+    def _call(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[tuple[str, str]]) -> list[str] | None:
         """Um pedido. Devolve a lista traduzida, ou None se recusada/inválida (o chamador subdivide)."""
         system = (f"You are a professional subtitle translator. Translate each item from {SRC_NAMES.get(source or '', 'the source language')} into {LANG_NAMES[target]}. "
                   "The items are consecutive subtitle lines of one film, in order; use neighbouring lines for context, pronouns and tone, but translate EACH item separately. "
+                  "Keep terms, names and the form of address consistent with the previous translations shown. " + self._address_rule(target) + " "
                   "Rules: return a JSON array of strings with EXACTLY the same number of items, same order; never merge, split, drop or add items; keep HTML tags such as <i></i> and "
                   "line breaks («\n») in place; keep names, numbers and sound-effect markers; keep it concise and natural for on-screen reading; do not add notes or explanations.")
-        user = {"previous_lines_for_context_only": ctx[-3:], "items_to_translate": items}
+        user: dict = {"previous_lines_for_context_only": [{"source": a, "translation": b} for a, b in ctx[-3:]]}
+        if self._next:
+            user["following_lines_for_context_only"] = self._next[:2]
+        if self.glossary:
+            user["character_and_place_names"] = self.glossary
+            user["names_note"] = "Keep these personal and place names exactly as written (do not translate or inflect them); translate every other word normally."
+        user["items_to_translate"] = items
         inline = self._is_inline()
         safety = [] if self._level >= 2 else self.SAFETY
         if inline:
@@ -390,7 +450,7 @@ class Gemini:
         kind = "day" if re.search(r"PerDay|per day|RequestsPerDay", text, re.I) else "minute"
         return kind, min(max(delay, 2.0) + 1.0, 90.0)
 
-    def _chunk(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[str], depth: int = 0) -> list[str]:
+    def _chunk(self, c: httpx.Client, items: list[str], target: str, source: str | None, ctx: list[tuple[str, str]], depth: int = 0) -> list[str]:
         res = self._call(c, items, target, source, ctx)
         if res is None:
             self.stats["invalid"] += 1
@@ -400,20 +460,45 @@ class Gemini:
             self.untranslated += 1       # recusada/inválida mesmo sozinha: fica no original (e é contado)
             return [items[0]]
         mid = len(items) // 2
-        return self._chunk(c, items[:mid], target, source, ctx, depth + 1) + self._chunk(c, items[mid:], target, source, ctx + items[:mid], depth + 1)
+        left = self._chunk(c, items[:mid], target, source, ctx, depth + 1)
+        return left + self._chunk(c, items[mid:], target, source, (ctx + list(zip(items[:mid], left)))[-3:], depth + 1)
+
+    def _verify(self, c: httpx.Client, texts: list[str], out: list[str], target: str, source: str | None) -> None:
+        """Verificação final: repete UMA vez, em pedidos pequenos, as falas que parecem por traduzir ou truncadas."""
+        bad = suspect_items(texts, out)
+        if not bad:
+            return
+        for k in range(0, len(bad), 8):
+            idx = bad[k:k + 8]
+            ctx = [(texts[j], out[j]) for j in range(max(0, idx[0] - 3), idx[0])]
+            self._next = texts[idx[-1] + 1:idx[-1] + 3]
+            res = self._call(c, [texts[j] for j in idx], target, source, ctx)
+            if res is None:
+                continue
+            for j, new in zip(idx, res):
+                if new.strip() and not suspect_items([texts[j]], [new]):
+                    out[j] = new
+                    self.suspect_fixed += 1
+        self.suspect_left = len(suspect_items(texts, out))
 
     def translate(self, texts: list[str], target: str, source: str | None = None, progress: Callable[[int, int], None] | None = None) -> list[str]:
         if target not in LANG_NAMES:
             raise DeepLError(f"Idioma de destino não suportado: {target}")
-        self.untranslated = 0
+        self.untranslated = self.suspect_left = self.suspect_fixed = 0
+        self.glossary = extract_names(texts) if len(texts) >= 30 else []
         out: list[str] = []
         chunks = [texts[i:i + GEMINI_CHUNK] for i in range(0, len(texts), GEMINI_CHUNK)]
         with self._client() as c:
             self._ensure_model(c)
             for n, ch in enumerate(chunks):
-                out += self._chunk(c, ch, target, source, texts[max(0, len(out) - 3):len(out)])
+                start = len(out)
+                self._next = texts[start + len(ch):start + len(ch) + 2]
+                out += self._chunk(c, ch, target, source, [(texts[j], out[j]) for j in range(max(0, start - 3), start)])
                 if progress:
                     progress(n + 1, len(chunks))
+            if texts and self.untranslated <= max(3, len(texts) * 0.03):
+                self._next = []
+                self._verify(c, texts, out, target, source)
         if texts and self.untranslated > max(3, len(texts) * 0.03):
             raise DeepLError(f"O Gemini recusou ou falhou {self.untranslated} de {len(texts)} falas (>3 %): tradução rejeitada para não instalar uma legenda incompleta.")
         return out
