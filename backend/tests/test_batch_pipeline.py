@@ -216,3 +216,39 @@ def test_backup_cleanup_rules(setup):
     assert moved_old.exists()
     r = setup.post("/api/backups/cleanup", json={"days": 30, "include_moved": True}).json()
     assert r["deleted"] == 1 and not moved_old.exists()
+
+
+# ---- referência = faixa embutida --------------------------------------------------------------
+
+def test_reference_can_be_an_embedded_track_extracted_on_demand(setup, monkeypatch):
+    from app import ffprobe as fp
+    row = setup.core.db.one("SELECT media_id, library_id, path FROM subtitles WHERE id=?", (setup.pt,))
+    mid, lib = row["media_id"], row["library_id"]
+    vpath = setup.core.db.one("SELECT path FROM media_items WHERE id=?", (mid,))["path"]
+    truth = make_cues(150, 3600, seed=2)
+    setup.ptfile.write_text(srt_from(truth, offset_s=7.0), "utf-8")                                  # a legenda está 7 s atrasada
+    setup.core.scanner.scan_library(dict(setup.core.db.one("SELECT * FROM libraries WHERE id=?", (lib,))), None, str(setup.dir), force_subs=True)
+    setup.core.db.execute("INSERT INTO subtitles(media_id,library_id,kind,path,stream_index,format,lang,forced,hi,text_based,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                          (mid, lib, "embedded", vpath, 3, "subrip", "de", 0, 0, 1, "ok"))
+    emb = setup.core.db.one("SELECT id FROM subtitles WHERE kind='embedded' AND stream_index=3")["id"]
+    setup.core.db.execute("INSERT INTO subtitles(media_id,library_id,kind,path,stream_index,format,lang,forced,hi,text_based,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                          (mid, lib, "embedded", vpath, 4, "subrip", "de", 1, 0, 1, "ok"))        # forçada: não serve de referência
+    calls = []
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda path, idx, ffmpeg="ffmpeg", timeout=300: calls.append(idx) or srt_from(truth, 0.0).encode())
+    refs = setup.get(f"/api/subtitles/{setup.pt}/cues").json()["references"]
+    emb_refs = [r for r in refs if r.get("embedded")]
+    assert [r["id"] for r in emb_refs] == [emb] and "#3" in emb_refs[0]["name"] and calls == []         # só se lista: nada é extraído
+    pv = setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": emb, "mode": "offset"}}).json()
+    assert calls == [3] and pv["first_start_after"] < pv["first_start_before"] and abs((pv["first_start_before"] - pv["first_start_after"]) - 7000) < 400
+    assert any("faixa embutida #3" in w and "tempos" in w for w in pv["warnings"])
+    ap = setup.post(f"/api/subtitles/{setup.pt}/apply", json={"action": "reference", "params": {"reference_id": emb, "mode": "offset"}, "base_hash": pv["base_hash"]})
+    assert ap.status_code == 200 and calls == [3]                                                      # a faixa extraída ficou em cache
+    cues = parse_srt(setup.ptfile.read_text("utf-8")).cues
+    assert abs(cues[0].start_ms - truth[0][0]) < 400
+    # recusas: a própria legenda, forçada, imagem, extração falhada
+    assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": setup.pt}}).status_code == 422
+    forced = setup.core.db.one("SELECT id FROM subtitles WHERE kind='embedded' AND stream_index=4")["id"]
+    assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": forced}}).status_code == 422
+    setup.core._ref_cache.clear()
+    monkeypatch.setattr(fp, "extract_subtitle_text", lambda *a, **k: None)
+    assert setup.post(f"/api/subtitles/{setup.pt}/preview", json={"action": "reference", "params": {"reference_id": emb, "mode": "offset"}}).status_code == 422

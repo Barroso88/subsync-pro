@@ -592,20 +592,29 @@ class App:
         tracks = [t for t in tracks if "comment" not in (t["title"] or "").lower()]
         tracks.sort(key=lambda t: (t["lang"] != candidate_lang, t["lang"] != "en", t["stream_index"]))
         for t in tracks[:2]:
-            key = (media["id"], t["stream_index"], stt.st_size, int(stt.st_mtime))
-            with self._ref_lock:
-                hit = self._ref_cache.get(key)
-            if hit is None:
-                data = fp.extract_subtitle_text(media["path"], t["stream_index"], self.cfg.ffmpeg_bin)
-                parsed = parse_bytes(data, ".srt") if data else None
-                hit = parsed if parsed and len(parsed.cues) >= 30 else False
-                with self._ref_lock:
-                    self._ref_cache[key] = hit
-                    while len(self._ref_cache) > self._REF_CACHE_MAX:
-                        self._ref_cache.pop(next(iter(self._ref_cache)))
+            hit = self._embedded_parsed(media, t["stream_index"], stt)
             if hit:
                 return f"faixa embutida #{t['stream_index']} ({t['lang'] or '?'})", hit
         return None
+
+    def _embedded_parsed(self, media: dict, stream_index: int, stt=None) -> "ParsedSub | None":
+        """Extrai (ffmpeg, uma vez; em cache) uma faixa de texto embutida e devolve as falas, ou None se não for utilizável (menos de 30 falas)."""
+        try:
+            stt = stt or os.stat(media["path"])
+        except OSError:
+            return None
+        key = (media["id"], stream_index, stt.st_size, int(stt.st_mtime))
+        with self._ref_lock:
+            hit = self._ref_cache.get(key)
+        if hit is None:
+            data = fp.extract_subtitle_text(media["path"], stream_index, self.cfg.ffmpeg_bin)
+            parsed = parse_bytes(data, ".srt") if data else None
+            hit = parsed if parsed and len(parsed.cues) >= 30 else False
+            with self._ref_lock:
+                self._ref_cache[key] = hit
+                while len(self._ref_cache) > self._REF_CACHE_MAX:
+                    self._ref_cache.pop(next(iter(self._ref_cache)))
+        return hit or None
 
     def prepare(self, media_id: int, result: dict, lang: str | None = None) -> dict:
         """Descarrega para staging, valida, avalia e calcula o destino. Não escreve na biblioteca."""
@@ -1555,7 +1564,10 @@ class App:
         return {"total": len(rows_), "head": rows_[:head], "tail": rows_[-tail:] if len(rows_) > head else [],
                 "references": [{"id": r["id"], "name": os.path.basename(r["path"]), "lang": r["lang"], "cues": r["cue_count"]}
                                for r in self.db.query("SELECT id,path,lang,cue_count FROM subtitles WHERE media_id=? AND kind='external' AND present=1 "
-                                                      "AND status='ok' AND text_based=1 AND id!=? AND cue_count>=30", (sub["media_id"], sid))]}
+                                                      "AND status='ok' AND text_based=1 AND id!=? AND cue_count>=30", (sub["media_id"], sid))]
+                              + [{"id": r["id"], "name": f"Faixa embutida #{r['stream_index']}" + (f" · {r['title']}" if r["title"] else ""), "lang": r["lang"], "cues": None, "embedded": True}
+                                 for r in self.db.query("SELECT id,stream_index,lang,title FROM subtitles WHERE media_id=? AND kind='embedded' AND present=1 AND text_based=1 "
+                                                        "AND forced=0 AND stream_index IS NOT NULL ORDER BY stream_index", (sub["media_id"],))]}
 
     def _plan(self, sid: int, action: str, params: dict):
         sub = self._sub(sid)
@@ -1565,22 +1577,33 @@ class App:
         if not parsed.cues:
             raise ServiceError("Legenda sem eventos legíveis.", 422)
         ref = None
+        embedded_ref = None
         if action == "reference":
             rid = params.get("reference_id")
-            rr = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='external' AND present=1 AND status='ok'", (rid, sub["media_id"]))
-            if not rr:
-                raise ServiceError("Referência inválida (tem de ser outra legenda válida do mesmo filme).", 422)
-            try:
-                rreal = require_within(rr["path"], [l["path"] for l in self.libraries()])
-            except PathSecurityError:
-                raise ServiceError("Referência fora das bibliotecas.", 403)
-            ref = parse_bytes(Path(rreal).read_bytes(), os.path.splitext(rr["path"])[1].lower())
-            if ref is None:
-                raise ServiceError("Não foi possível ler a referência.", 422)
+            rr = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND present=1 AND text_based=1 AND ((kind='external' AND status='ok') OR (kind='embedded' AND forced=0))",
+                             (rid, sub["media_id"]))
+            if not rr or rr["id"] == sub["id"]:
+                raise ServiceError("Referência inválida (tem de ser outra legenda ou faixa de texto embutida do mesmo filme).", 422)
+            if rr["kind"] == "embedded":
+                media = self.media_dict(sub["media_id"])
+                ref = self._embedded_parsed(media, rr["stream_index"])
+                if ref is None:
+                    raise ServiceError("Não foi possível extrair a faixa embutida (ffmpeg falhou, o vídeo não está acessível ou a faixa tem menos de 30 falas).", 422)
+                embedded_ref = f"faixa embutida #{rr['stream_index']}"
+            else:
+                try:
+                    rreal = require_within(rr["path"], [l["path"] for l in self.libraries()])
+                except PathSecurityError:
+                    raise ServiceError("Referência fora das bibliotecas.", 403)
+                ref = parse_bytes(Path(rreal).read_bytes(), os.path.splitext(rr["path"])[1].lower())
+                if ref is None:
+                    raise ServiceError("Não foi possível ler a referência.", 422)
         try:
             fn, info = st.make_mapper(action, params, parsed.cues, ref)
         except st.ToolError as e:
             raise ServiceError(str(e), e.status)
+        if embedded_ref:
+            info["embedded_ref"] = embedded_ref
         return sub, real, data, text, enc, parsed, fn, info
 
     def _text_plan(self, sid: int, params: dict, mode: str = "textfix"):
@@ -1736,6 +1759,8 @@ class App:
         pv = st.build_preview(parsed.cues, fn, sub.get("media_duration"))
         pv.update({"summary": info["summary"], "base_hash": st.sha1(data), "name": os.path.basename(real), "encoding": enc,
                    "estimate": {k: v for k, v in (info.get("estimate") or {}).items() if k != "linear"} or None})
+        if info.get("embedded_ref"):
+            pv.setdefault("warnings", []).append(f"A referência é a {info['embedded_ref']}, extraída do vídeo: só se comparam tempos (serve qualquer idioma). Se essa faixa estiver desfasada do áudio, esta legenda ficará igualmente desfasada; confirme com «Alinhar com o áudio».")
         return pv
 
     def _backup(self, real: str, sid: int) -> str:

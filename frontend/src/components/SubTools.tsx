@@ -10,7 +10,7 @@ interface AudioWin { t: number; offset: number | null; z: number; used?: boolean
 interface ATrack { index: number; lang: string | null; title: string | null; channels: number | null; codec: string | null }
 interface AudioRes { mode: "aligned" | "offset" | "linear" | "uneven" | "inconclusive"; track?: number; rigorous?: boolean; uneven_windows?: number; residual_p90_s?: number; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; z_total?: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
 interface Cue { n: number; start: number; end: number; text: string }
-interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number }[] }
+interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number | null; embedded?: boolean }[] }
 interface PRow { n: number; old_start: number; new_start: number; new_end: number; text: string }
 interface QIssue { key: string; label: string; severity: "bad" | "warn" | "info"; fix: string | null; hint: string; count: number; examples: { n: number; time: string; text: string }[] }
 interface QualityRes { cues: number; issues: QIssue[]; max_len: number; avg_chars: number; clean: boolean; name: string; encoding: string }
@@ -145,14 +145,17 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
         )}
         {tool === "reference" && (
           <div className="space-y-2.5">
-            <div className="text-sm text-mute flex gap-2"><GitCompare size={16} className="shrink-0 mt-0.5" /><div>Alinha esta legenda com <b className="text-fg">outra legenda já existente</b> do mesmo filme (por exemplo, a que sabe estar certa). <b className="text-fg">Não usa o áudio</b>: assume que a referência está sincronizada.</div></div>
+            <div className="text-sm text-mute flex gap-2"><GitCompare size={16} className="shrink-0 mt-0.5" /><div>Alinha esta legenda com <b className="text-fg">outra legenda</b> do mesmo filme, <b className="text-fg">externa ou uma faixa embutida no vídeo</b> (por exemplo, a que sabe estar certa). <b className="text-fg">Não usa o áudio</b>: assume que a referência está sincronizada. Só compara tempos, por isso a referência pode estar noutro idioma.</div></div>
             {cues.isLoading && <Skeleton className="h-10" />}
-            {cues.data && refs.length === 0 && <div className="text-sm text-warn">Este filme não tem outra legenda externa válida para usar como referência.</div>}
+            {cues.data && refs.length === 0 && <div className="text-sm text-warn">Este filme não tem outra legenda nem faixa de texto embutida (não forçada) para usar como referência.</div>}
             {refs.length > 0 && (
               <div className="space-y-2">
                 <select className="input" value={params.reference_id ?? ""} onChange={(e) => set("reference_id", Number(e.target.value))}>
-                  <option value="">Escolha a referência…</option>{refs.map((r) => <option key={r.id} value={r.id}>{r.name} {r.lang ? `(${r.lang})` : ""} · {r.cues} falas</option>)}
+                  <option value="">Escolha a referência…</option>
+                  {refs.filter((r) => !r.embedded).length > 0 && <optgroup label="Legendas externas">{refs.filter((r) => !r.embedded).map((r) => <option key={r.id} value={r.id}>{r.name} {r.lang ? `(${r.lang})` : ""} · {r.cues} falas</option>)}</optgroup>}
+                  {refs.filter((r) => r.embedded).length > 0 && <optgroup label="Faixas embutidas no vídeo (extraídas ao pré-visualizar)">{refs.filter((r) => r.embedded).map((r) => <option key={r.id} value={r.id}>{r.name} {r.lang ? `(${r.lang})` : ""}</option>)}</optgroup>}
                 </select>
+                {refs.find((r) => r.id === params.reference_id)?.embedded && <div className="text-xs text-dim">Pré-visualizar extrai a faixa com o ffmpeg e pode demorar (uma vez; fica em cache). Se essa faixa estiver desfasada do áudio, esta legenda também ficará: confirme com «Alinhar com o áudio».</div>}
                 <div className="flex gap-4 text-sm flex-wrap">
                   <label className="flex items-center gap-2 cursor-pointer"><input type="radio" className="accent-[rgb(229,160,13)]" checked={params.mode === "offset"} onChange={() => set("mode", "offset")} />Só deslocar (offset)</label>
                   <label className="flex items-center gap-2 cursor-pointer"><input type="radio" className="accent-[rgb(229,160,13)]" checked={params.mode === "linear"} onChange={() => set("mode", "linear")} />Corrigir também a deriva (frame rate)</label>
