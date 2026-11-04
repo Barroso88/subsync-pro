@@ -777,9 +777,18 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         core.audio_check_dismiss(sid)
         return {"ok": True}
 
+    class AudioSyncIn(BaseModel):
+        track: int = 0
+        rigorous: bool = True
+
+    @api.get("/subtitles/{sid:int}/audio-tracks")
+    def audio_tracks(sid: int):
+        return core.audio_tracks(sid)
+
     @api.post("/subtitles/{sid:int}/audio-sync/start", status_code=202)
-    def audio_sync_start(sid: int):
-        return {"job_id": core.start_audio_sync(sid)}
+    def audio_sync_start(sid: int, b: AudioSyncIn | None = None):
+        b = b or AudioSyncIn()
+        return {"job_id": core.start_audio_sync(sid, b.track, b.rigorous)}
 
     @api.post("/subtitles/{sid:int}/delete")
     def sub_delete(sid: int):

@@ -32,6 +32,9 @@ ZT_MIN = 7.0                   # pico da soma das curvas (em desvios-padrão) pa
 SUPPORT_Z = 3.0                # uma janela «apoia» o desvio se a sua curva, nesse ponto, tiver pelo menos este z
 LOCAL_S = 4.0                  # a janela só procura o seu pico a ±4 s do pico global (permite deriva pequena)
 AGREE_TOL_S = 0.8
+RIGOR_WINDOWS, RIGOR_LENGTH = 20, 150      # modo rigoroso: o dobro das janelas (mais curtas), do início ao fim do filme
+RIGOR_ALIGNED_S = 0.25                      # «alinhada» só com desvio médio abaixo disto (o modo normal aceita 0,4 s)
+RIGOR_UNEVEN_S = 0.7                        # uma janela com apoio forte que se afasta mais do que isto da correção marca uma zona desfasada
 PROBE_BIN = "ffprobe"
 _FILTER_CACHE: dict[str, str] = {}
 
@@ -42,14 +45,31 @@ class AudioSyncError(Exception):
 
 # ---- áudio → atividade ------------------------------------------------------------
 
-def audio_filter(path: str) -> str:
+def list_audio_tracks(path: str, ffprobe_bin: str = "ffprobe") -> list[dict]:
+    """Faixas de áudio do vídeo (índice relativo ao áudio: 0, 1, …), para escolher qual comparar com a legenda."""
+    import json
+    try:
+        cp = subprocess.run([ffprobe_bin, "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name,channels,channel_layout:stream_tags=language,title",
+                             "-of", "json", path], capture_output=True, timeout=30, check=False)
+        data = json.loads(cp.stdout.decode("utf-8", "ignore") or "{}") if cp.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    out = []
+    for i, st in enumerate(data.get("streams", [])):
+        tags = st.get("tags") or {}
+        out.append({"index": i, "lang": tags.get("language"), "title": tags.get("title"), "channels": st.get("channels"), "codec": st.get("codec_name")})
+    return out
+
+
+def audio_filter(path: str, track: int = 0) -> str:
     """Filtro do ffmpeg: canal central se existir (5.1/7.1), senão mistura mono; e banda da voz."""
-    if path in _FILTER_CACHE:
-        return _FILTER_CACHE[path]
+    ckey = path if track == 0 else f"{path}#{track}"
+    if ckey in _FILTER_CACHE:
+        return _FILTER_CACHE[ckey]
     band = "highpass=f=150,lowpass=f=4000"
     pan = ""
     try:
-        cp = subprocess.run([PROBE_BIN, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,channel_layout", "-of", "csv=p=0", path],
+        cp = subprocess.run([PROBE_BIN, "-v", "error", "-select_streams", f"a:{int(track)}", "-show_entries", "stream=channels,channel_layout", "-of", "csv=p=0", path],
                             capture_output=True, timeout=30, check=False)
         layout = cp.stdout.decode("utf-8", "ignore").strip().split(",") if cp.returncode == 0 else []
         chans = int(layout[0]) if layout and layout[0].strip().isdigit() else 0
@@ -57,14 +77,14 @@ def audio_filter(path: str) -> str:
             pan = "pan=mono|c0=FC,"                           # o diálogo vive no canal central (5.1/7.1; sem layout declarado assume-se o habitual)
     except (OSError, subprocess.SubprocessError):
         pass
-    _FILTER_CACHE[path] = pan + band
-    return _FILTER_CACHE[path]
+    _FILTER_CACHE[ckey] = pan + band
+    return _FILTER_CACHE[ckey]
 
 
-def extract_window(path: str, start: float, dur: float, ffmpeg_bin: str = "ffmpeg", timeout: int = 180) -> np.ndarray | None:
+def extract_window(path: str, start: float, dur: float, ffmpeg_bin: str = "ffmpeg", timeout: int = 180, track: int = 0) -> np.ndarray | None:
     """Áudio mono 8 kHz s16 de [start, start+dur). Só leitura; sem shell; None se falhar."""
-    cmd = [ffmpeg_bin, "-v", "error", "-nostdin", "-ss", f"{max(0.0, start):.2f}", "-t", f"{dur:.2f}", "-i", path, "-map", "0:a:0", "-vn",
-           "-af", audio_filter(path), "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
+    cmd = [ffmpeg_bin, "-v", "error", "-nostdin", "-ss", f"{max(0.0, start):.2f}", "-t", f"{dur:.2f}", "-i", path, "-map", f"0:a:{int(track)}", "-vn",
+           "-af", audio_filter(path, track), "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
     try:
         cp = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -136,7 +156,7 @@ def _theil_sen(ts: list[float], ys: list[float]) -> tuple[float, float]:
     return a, b
 
 
-def decide(curves: list[np.ndarray | None], centers: list[float], duration: float, speech: list[float]) -> dict:
+def decide(curves: list[np.ndarray | None], centers: list[float], duration: float, speech: list[float], rigorous: bool = False) -> dict:
     """Junta as curvas das janelas e decide: aligned | offset | linear | inconclusive (com justificação)."""
     total = len(curves)
     wins = [{"t": t, "offset": None, "z": 0.0, "used": False, "speech_pct": round(sp * 100)} for t, sp in zip(centers, speech)]
@@ -162,7 +182,7 @@ def decide(curves: list[np.ndarray | None], centers: list[float], duration: floa
         wins[i]["z"] = round(float(c[kw]), 1)
         if c[kw] >= SUPPORT_Z:
             support.append(i)
-    need = max(3, int(np.ceil(0.4 * total)))
+    need = max(4, int(np.ceil(0.6 * total))) if rigorous else max(3, int(np.ceil(0.4 * total)))
     if zt < ZT_MIN:
         out["reason"] = (f"Nenhum desvio se destaca (pico somado {zt:.1f}, são precisos {ZT_MIN:.0f}): o áudio pode ter pouco diálogo, ou a legenda é de outro corte/versão, "
                          "forçada, de outra língua falada ou muito diferente do filme.")
@@ -185,10 +205,23 @@ def decide(curves: list[np.ndarray | None], centers: list[float], duration: floa
     out.update(mode=mode, agree=len(support), confidence=round(len(support) / total, 2), offset_s=round(a, 3), scale=round(1 + b, 8), drift_s_per_hour=round(b * 3600, 2))
     resid = [abs(wins[i]["offset"] - (a + b * wins[i]["t"])) for i in support]
     out["residual_s"] = round(float(np.median(resid)), 2)
-    if mode == "offset" and abs(a) < 0.4:
+    tol = RIGOR_ALIGNED_S if rigorous else 0.4
+    if mode == "offset" and abs(a) < tol:
         out["mode"] = "aligned"
-    elif mode == "linear" and abs(a) < 0.4 and abs(b * duration) < 1.0:
+    elif mode == "linear" and abs(a) < tol and abs(b * duration) < 1.0:
         out["mode"] = "aligned"
+    if rigorous:
+        out["rigorous"] = True
+        for i, w in enumerate(wins):                                   # desvio de cada janela face à correção encontrada
+            if w["offset"] is not None:
+                w["dev"] = round(w["offset"] - (a + b * w["t"]), 2)
+        bad = [w for w in wins if w.get("dev") is not None and w["z"] >= SUPPORT_Z and abs(w["dev"]) > RIGOR_UNEVEN_S]
+        out["uneven_windows"] = len(bad)
+        out["residual_p90_s"] = round(float(np.percentile(resid, 90)), 2)
+        if len(bad) >= 2 or (resid and float(np.percentile(resid, 90)) > RIGOR_UNEVEN_S):
+            out["mode"] = "uneven"
+            out["reason"] = (f"O desvio médio é {a:+.2f} s, mas {len(bad)} zonas do filme afastam-se mais de {RIGOR_UNEVEN_S:.1f} s dessa correção "
+                             "(a legenda pode ser de outro corte, ter cenas a mais ou a menos, ou o áudio escolhido não é o da legenda). Não se propõe correção.")
     return out
 
 
@@ -204,11 +237,11 @@ def spoken_span(cues: list[tuple[int, int, int]]) -> list[tuple[int, int]]:
 
 # ---- orquestração ---------------------------------------------------------------------
 
-def window_starts(duration: float, n: int = N_WINDOWS, length: int = WINDOW_S) -> list[float]:
+def window_starts(duration: float, n: int = N_WINDOWS, length: int = WINDOW_S, lo_frac: float = 0.05, hi_frac: float = 0.92) -> list[float]:
     """Janelas espalhadas entre 5 % e 92 % do filme (evita genéricos), sem sair do ficheiro."""
     if duration < length * 2:
         return [0.0]
-    lo, hi = duration * 0.05, max(duration * 0.92 - length, duration * 0.05)
+    lo, hi = duration * lo_frac, max(duration * hi_frac - length, duration * lo_frac)
     return [round(lo + (hi - lo) * i / max(1, n - 1), 1) for i in range(n)]
 
 
@@ -216,19 +249,21 @@ RATIOS = (1.0, 25 / 23.976, 23.976 / 25, 25 / 24, 24 / 25)     # diferenças de 
 
 
 def analyze(path: str, cues: list[tuple[int, int]], duration: float, ffmpeg_bin: str = "ffmpeg",
-            progress: Callable[[int, int, str], None] | None = None, extract: Callable | None = None) -> dict:
+            progress: Callable[[int, int, str], None] | None = None, extract: Callable | None = None, track: int = 0, rigorous: bool = False) -> dict:
     """Corre as janelas e devolve o resultado de `decide`. Lança AudioSyncError se não for possível ler o áudio.
     Resultado final: t_novo = scale · t + offset_s (em segundos); `mode`: aligned | offset | linear | inconclusive."""
     extract = extract or extract_window
     if not cues:
         raise AudioSyncError("A legenda não tem falas.")
-    starts = window_starts(duration)
+    n_win, wlen = (RIGOR_WINDOWS, RIGOR_LENGTH) if rigorous else (N_WINDOWS, WINDOW_S)
+    starts = window_starts(duration, n_win, wlen, 0.03, 0.97) if rigorous else window_starts(duration)
     envs: list[tuple[float, np.ndarray, float, float]] = []
     failed = 0
     for i, t0 in enumerate(starts):
         if progress:
             progress(i, len(starts), f"A ler o áudio ({int(t0 // 60)} min)…")
-        samples = extract(path, t0, min(WINDOW_S, max(30.0, duration - t0)), ffmpeg_bin)
+        dur_w = min(wlen, max(30.0, duration - t0))
+        samples = extract(path, t0, dur_w, ffmpeg_bin) if track == 0 else extract(path, t0, dur_w, ffmpeg_bin, track=track)
         if samples is None:
             failed += 1
             continue
@@ -243,11 +278,11 @@ def analyze(path: str, cues: list[tuple[int, int]], duration: float, ffmpeg_bin:
     best = None
     for r in RATIOS:
         cr = [(int(s * r), int(e * r)) for s, e in cues] if r != 1.0 else cues
-        out = decide([window_curve(env, cr, t0) for t0, env, _, _ in envs], centers, duration, speech)
+        out = decide([window_curve(env, cr, t0) for t0, env, _, _ in envs], centers, duration, speech, rigorous)
         out["ratio"] = r
         if best is None or (out["mode"] != "inconclusive", out["z_total"]) > (best["mode"] != "inconclusive", best["z_total"]):
             best = out
-        if r == 1.0 and out["mode"] != "inconclusive" and out["confidence"] >= 0.6:
+        if r == 1.0 and out["mode"] in ("aligned", "offset", "linear") and out["confidence"] >= 0.6:
             break                                                  # o 1.º teste já concordou bem: não se procura deriva de frame rate
     out = best
     # mapeamento final sobre os tempos ORIGINAIS: t_audio = (r·t + a) / (1 − b)
@@ -260,5 +295,6 @@ def analyze(path: str, cues: list[tuple[int, int]], duration: float, ffmpeg_bin:
             out["mode"] = "linear"                                  # só alinha depois de corrigir a escala (frame rate)
         out["drift_s_per_hour"] = round((out["scale"] - 1) * 3600, 2)
     out["windows_failed"] = failed
+    out["track"] = track
     out["duration_s"] = round(duration, 1)
     return out

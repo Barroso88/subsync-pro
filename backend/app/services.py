@@ -1768,16 +1768,26 @@ class App:
         return {"edit_id": eid, "summary": info["summary"], "dropped": stats["dropped"], "clamped": stats["clamped"]}
 
     # ---- alinhar a legenda com a fala do áudio (opcional, a pedido) ------------------------
-    def start_audio_sync(self, sid: int) -> int:
+    def audio_tracks(self, sid: int) -> list[dict]:
+        from . import audio_sync as au
+        sub = self._sub(sid)
+        m = self.db.one("SELECT path FROM media_items WHERE id=?", (sub["media_id"],))
+        if not m or not os.path.isfile(m["path"]):
+            raise ServiceError("O vídeo não está acessível.", 422)
+        return au.list_audio_tracks(m["path"], self.cfg.ffprobe_bin)
+
+    def start_audio_sync(self, sid: int, track: int = 0, rigorous: bool = True) -> int:
         sub = self._sub(sid)
         if not sub["path"].lower().endswith(".srt") or not sub.get("media_id"):
             raise ServiceError("Só legendas SRT associadas a um vídeo.", 422)
         m = self.db.one("SELECT path,duration FROM media_items WHERE id=?", (sub["media_id"],))
         if not m or not m["duration"] or not os.path.isfile(m["path"]):
             raise ServiceError("O vídeo não está acessível ou não tem duração conhecida (reanalise o filme).", 422)
-        return self.jobs.submit("audio_sync", f"Alinhar com o áudio: {os.path.basename(sub['path'])}", {"subtitle_id": sid}, dedupe=True)
+        track = max(0, min(int(track), 15))
+        params = {"subtitle_id": sid, **({"track": track} if track else {}), **({} if rigorous else {"rigorous": False})}
+        return self.jobs.submit("audio_sync", f"Alinhar com o áudio: {os.path.basename(sub['path'])}" + (f" (faixa de áudio {track + 1})" if track else ""), params, dedupe=True)
 
-    def _audio_core(self, sub: dict, prog) -> dict:
+    def _audio_core(self, sub: dict, prog, track: int = 0, rigorous: bool = True) -> dict:
         """Analisa uma legenda contra o áudio do vídeo, guarda o resultado (audio_checks) e marca «alinhada» se for o caso."""
         from . import audio_sync as au
         m = self.db.one("SELECT path,duration FROM media_items WHERE id=?", (sub["media_id"],))
@@ -1790,7 +1800,7 @@ class App:
         cues = au.spoken_span([(c.start_ms, c.end_ms, len(c.text)) for c in parse_srt(text).cues])      # falas que desaparecem cedo demais contam com o tempo de leitura
         au.PROBE_BIN = self.cfg.ffprobe_bin
         try:
-            res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog)
+            res = au.analyze(m["path"], cues, float(m["duration"]), self.cfg.ffmpeg_bin, prog, track=track, rigorous=rigorous)
         except au.AudioSyncError as e:
             raise JobError(str(e))
         res["subtitle_id"], res["base_hash"] = sub["id"], st.sha1(data)
@@ -1813,7 +1823,7 @@ class App:
             if ctx.total == 0:
                 ctx.set_total(total + 1)
             ctx.step(msg, inc=1 if i > 0 else 0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
-        return self._audio_core(sub, prog)
+        return self._audio_core(sub, prog, int(p.get("track", 0)), bool(p.get("rigorous", True)))
 
     # ---- verificação de sincronização em lote (resultados ficam à espera de aprovação) ------------
     def audio_batch_candidates(self, media_ids: list[int] | None = None, redo: bool = False) -> list[dict]:
@@ -1863,7 +1873,7 @@ class App:
             try:
                 res = self._audio_core(sub, prog)
                 out["analysed"] += 1
-                out[{"aligned": "aligned", "offset": "pending", "linear": "pending"}.get(res["mode"], "inconclusive")] += 1
+                out[{"aligned": "aligned", "offset": "pending", "linear": "pending"}.get(res["mode"], "inconclusive")] += 1      # «uneven» também conta como inconclusiva
             except JobCancelled:
                 raise
             except JobError as e:
@@ -1929,7 +1939,7 @@ class App:
                 def prog(i: int, total: int, msg: str, label=label) -> None:
                     ctx.step(f"{label}: {msg}", inc=0, message=f"Janela {min(i + 1, total)} de {total}", force=True)
                 try:
-                    res = au.analyze(media["path"], cues, float(media["duration"]), self.cfg.ffmpeg_bin, prog, extract=extract)
+                    res = au.analyze(media["path"], cues, float(media["duration"]), self.cfg.ffmpeg_bin, prog, extract=extract, rigorous=True)
                     summ = {k: res.get(k) for k in ("mode", "offset_s", "scale", "agree", "windows_total", "windows_clear", "confidence", "z_total", "reason")}
                     item["audio"] = summ
                     ev = jloads(self.db.one("SELECT evaluation FROM downloads WHERE id=?", (did,))["evaluation"], {}) or {}

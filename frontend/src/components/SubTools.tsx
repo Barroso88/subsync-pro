@@ -6,8 +6,9 @@ import { cx, fmtTs } from "../lib";
 import { Badge, Modal, Skeleton, Tabs, useToast } from "./ui";
 
 type Tool = "shift" | "fps" | "twopoint" | "reference" | "audio" | "durations" | "quality" | "ptpt" | "text" | "convert" | "delete";
-interface AudioWin { t: number; offset: number | null; z: number; used?: boolean; speech_pct?: number }
-interface AudioRes { mode: "aligned" | "offset" | "linear" | "inconclusive"; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; z_total?: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
+interface AudioWin { t: number; offset: number | null; z: number; used?: boolean; speech_pct?: number; dev?: number }
+interface ATrack { index: number; lang: string | null; title: string | null; channels: number | null; codec: string | null }
+interface AudioRes { mode: "aligned" | "offset" | "linear" | "uneven" | "inconclusive"; track?: number; rigorous?: boolean; uneven_windows?: number; residual_p90_s?: number; offset_s: number; scale: number; drift_s_per_hour: number; agree: number; windows_total: number; windows_clear: number; windows_failed: number; confidence: number; z_total?: number; residual_s?: number; reason?: string; ratio?: number; windows: AudioWin[] }
 interface Cue { n: number; start: number; end: number; text: string }
 interface CuesRes { total: number; head: Cue[]; tail: Cue[]; references: { id: number; name: string; lang: string | null; cues: number }[] }
 interface PRow { n: number; old_start: number; new_start: number; new_end: number; text: string }
@@ -34,7 +35,10 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
   const [audioRes, setAudioRes] = useState<AudioRes | null>(null);
   useEffect(() => { setAudioJob(null); setAudioRes(null); }, [sub?.id]);
   useEffect(() => { setPv(null); setConfirmDel(false); }, [tool, sub?.id]);
-  const audioStart = useMutation({ mutationFn: () => api.post<{ job_id: number }>(`/subtitles/${sub!.id}/audio-sync/start`), onSuccess: (r) => { setAudioRes(null); setPv(null); setAudioJob(r.job_id); }, onError: (e: Error) => toast("bad", e.message) });
+  const [audioTrack, setAudioTrack] = useState(0);
+  const tracksQ = useQuery({ queryKey: ["audio-tracks", sub?.id], queryFn: () => api.get<ATrack[]>(`/subtitles/${sub!.id}/audio-tracks`), enabled: !!sub && sub.isSrt && tool === "audio", retry: false });
+  useEffect(() => setAudioTrack(0), [sub?.id]);
+  const audioStart = useMutation({ mutationFn: () => api.post<{ job_id: number }>(`/subtitles/${sub!.id}/audio-sync/start`, { track: audioTrack, rigorous: true }), onSuccess: (r) => { setAudioRes(null); setPv(null); setAudioJob(r.job_id); }, onError: (e: Error) => toast("bad", e.message) });
   const audioQ = useQuery({ queryKey: ["audio-job", audioJob], enabled: audioJob != null,
     queryFn: () => api.get<{ status: string; progress: number; total: number; message: string | null; current: string | null; error: string | null; result: AudioRes | null }>(`/jobs/${audioJob}`),
     refetchInterval: (q) => (q.state.data && ["queued", "running"].includes(q.state.data.status) ? 1000 : false) });
@@ -216,10 +220,18 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
           <div className="space-y-3">
             <div className="text-sm text-mute flex gap-2"><AudioLines size={16} className="shrink-0 mt-0.5" /><div>Compara quando a legenda mostra texto com quando há <b className="text-fg">fala no áudio do vídeo</b>, em 10 janelas de 4 min espalhadas pelo filme, e estima o desvio (ou a deriva de frame rate). <b className="text-fg">Só lê o áudio</b>; nada é gravado sem pré-visualização e confirmação.</div></div>
             <div className="card bg-s2 p-3 text-xs text-mute space-y-1">
-              <div>• O ffmpeg lê cerca de 40 min de áudio do ficheiro, no canal central se for 5.1/7.1 (em ficheiros grandes na rede pode demorar 1–3 min). Corre em segundo plano; pode fechar a janela.</div>
+              <div>• Modo rigoroso: 20 janelas de 2,5 min do início ao fim do filme (≈50 min de áudio), com critérios mais exigentes: só diz «alinhada» com desvio abaixo de 0,25 s e a maioria das janelas a concordar, e assinala as zonas do filme que se afastam da correção. O ffmpeg lê o áudio do ficheiro, no canal central se for 5.1/7.1 (em ficheiros grandes na rede pode demorar 1–3 min). Corre em segundo plano; pode fechar a janela.</div>
               <div>• Só conclui se as janelas <b>concordarem</b>; senão diz «inconclusivo». Música, dobragens, legendas forçadas ou outro corte do filme podem enganar a deteção.</div>
               <div>• A «confiança» é a fração de janelas que concordam, não uma probabilidade.</div>
             </div>
+            {(tracksQ.data?.length ?? 0) > 1 && (
+              <label className="flex items-center gap-2 flex-wrap text-sm">Faixa de áudio a comparar
+                <select className="input !w-auto" value={audioTrack} onChange={(e) => setAudioTrack(Number(e.target.value))}>
+                  {tracksQ.data!.map((t) => <option key={t.index} value={t.index}>{`${t.index + 1}: ${t.lang ?? "?"}${t.title ? ` · ${t.title}` : ""}${t.channels ? ` · ${t.channels} can.` : ""}${t.codec ? ` · ${t.codec}` : ""}`}</option>)}
+                </select>
+                <span className="text-xs text-dim">Use a faixa que ouve: uma dobragem pode ter tempos diferentes da original.</span>
+              </label>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <button className="btn-primary" disabled={!sub.isSrt || audioRunning || audioStart.isPending} onClick={() => audioStart.mutate()}>{(audioRunning || audioStart.isPending) ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} />}Analisar o áudio do vídeo</button>
               {audioRunning && <button className="btn-ghost" onClick={() => audioCancel.mutate()}>Cancelar</button>}
@@ -236,16 +248,19 @@ export function SubToolsModal({ sub, onClose }: { sub: { id: number; name: strin
                   {audioRes.mode === "aligned" && <div className="flex items-center gap-2 font-medium text-ok"><CheckCircle2 size={16} />Já está alinhada com a fala do vídeo ({audioRes.agree} de {audioRes.windows_total} janelas concordam, desvio ≈ {audioRes.offset_s.toFixed(2)} s). Nada a ajustar.</div>}
                   {audioRes.mode === "offset" && <div className="font-medium">Desvio estimado: {audioRes.offset_s > 0 ? "atrasar" : "adiantar"} <b className="text-accent">{Math.abs(audioRes.offset_s).toFixed(2)} s</b> a toda a legenda ({audioRes.agree} de {audioRes.windows_total} janelas concordam).</div>}
                   {audioRes.mode === "linear" && <div className="font-medium">Deriva de frame rate: tempos × <b className="text-accent">{audioRes.scale.toFixed(6)}</b> {audioRes.offset_s >= 0 ? "+" : "−"} {Math.abs(audioRes.offset_s).toFixed(2)} s ({audioRes.agree} de {audioRes.windows_total} janelas concordam).</div>}
+                  {audioRes.mode === "uneven" && <div className="space-y-1.5"><div className="flex gap-2 text-warn"><AlertTriangle size={16} className="shrink-0 mt-0.5" /><span>Desalinhada em partes do filme: {audioRes.reason}</span></div>
+                    <div className="text-xs text-mute">Veja na tabela a coluna «Face à correção»: as janelas a vermelho mostram onde a legenda se afasta. Experimente outra faixa de áudio, outra legenda (de outro release) ou a ferramenta «Dois pontos» para uma parte do filme.</div></div>}
                   {audioRes.mode === "inconclusive" && <div className="space-y-1.5"><div className="flex gap-2 text-warn"><AlertTriangle size={16} className="shrink-0 mt-0.5" /><span>Inconclusivo: {audioRes.reason}</span></div>
                     <div className="text-xs text-mute">Alternativas: <b>Sincronizar com referência</b> (se tiver outra legenda do filme certa), <b>Dois pontos</b> ou o ajuste manual. «Fala detetada» muito baixa em todas as janelas indica que o áudio lido quase não tem diálogo (por exemplo, a primeira faixa de áudio não é a falada).</div></div>}
-                  <div className="text-xs text-dim">Janelas: {audioRes.windows_total} · com fala clara {audioRes.windows_clear}{audioRes.windows_failed ? ` · sem áudio legível ${audioRes.windows_failed}` : ""}{audioRes.confidence ? ` · concordam ${Math.round(audioRes.confidence * 100)} %` : ""}{audioRes.z_total ? ` · pico somado ${audioRes.z_total.toFixed(1)}` : ""}{audioRes.residual_s != null ? ` · erro mediano ${audioRes.residual_s.toFixed(2)} s` : ""}</div>
+                  <div className="text-xs text-dim">Janelas: {audioRes.windows_total} · com fala clara {audioRes.windows_clear}{audioRes.windows_failed ? ` · sem áudio legível ${audioRes.windows_failed}` : ""}{audioRes.rigorous ? ` · modo rigoroso (faixa de áudio ${(audioRes.track ?? 0) + 1})` : ""}{audioRes.residual_p90_s != null ? ` · 90 % das janelas a menos de ${audioRes.residual_p90_s.toFixed(2)} s` : ""}{audioRes.confidence ? ` · concordam ${Math.round(audioRes.confidence * 100)} %` : ""}{audioRes.z_total ? ` · pico somado ${audioRes.z_total.toFixed(1)}` : ""}{audioRes.residual_s != null ? ` · erro mediano ${audioRes.residual_s.toFixed(2)} s` : ""}</div>
                   {audioUsable && <div className="text-xs text-mute">Carregue em <b>Pré-visualizar</b> para ver o antes/depois e só depois em Aplicar (fica cópia do original).</div>}
                 </div>
-                <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">Minuto</th><th className="th">Fala detetada</th><th className="th">Desvio medido</th><th className="th">Sinal</th><th className="th">Conta</th></tr></thead>
+                <div className="card overflow-hidden"><table className="w-full"><thead className="border-b border-line"><tr><th className="th">Minuto</th><th className="th">Fala detetada</th><th className="th">Desvio medido</th><th className="th">Face à correção</th><th className="th">Sinal</th><th className="th">Conta</th></tr></thead>
                   <tbody>{audioRes.windows.map((w, i) => (
                     <tr key={i} className="border-b border-line/50 last:border-0 text-xs"><td className="px-2 py-1.5 tabular-nums text-mute">{Math.round(w.t / 60)}</td>
                       <td className="px-2 py-1.5 tabular-nums text-dim">{w.speech_pct != null ? `${w.speech_pct} %` : "—"}</td>
                       <td className="px-2 py-1.5 tabular-nums">{w.offset == null ? "—" : `${w.offset > 0 ? "+" : ""}${w.offset.toFixed(2)} s`}</td>
+                      <td className={cx("px-2 py-1.5 tabular-nums", w.dev != null && Math.abs(w.dev) > 0.7 && w.z >= 3 ? "text-bad font-medium" : "text-dim")}>{w.dev == null ? "—" : `${w.dev > 0 ? "+" : ""}${w.dev.toFixed(2)} s`}</td>
                       <td className="px-2 py-1.5 tabular-nums text-dim">{w.z ? w.z.toFixed(1) : "—"}</td><td className="px-2 py-1.5">{w.used ? <CheckCircle2 size={13} className="text-ok" /> : <span className="text-dim">não</span>}</td></tr>))}</tbody></table></div>
               </div>
             )}

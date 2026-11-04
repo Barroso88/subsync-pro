@@ -123,7 +123,43 @@ def test_candidates_checked_against_audio_and_best_is_the_aligned_one(setup, mon
     assert out["opensubtitles:good"]["audio"]["mode"] == "aligned" and out["opensubtitles:late"]["audio"]["mode"] == "offset"
     assert abs(out["opensubtitles:late"]["audio"]["offset_s"] + 6.0) < 0.3
     assert j["result"]["best"] == "opensubtitles:good"
-    assert calls["n"] <= 10                                                          # o áudio do filme foi lido uma única vez para as duas candidatas
+    assert calls["n"] <= A.RIGOR_WINDOWS                                                          # o áudio do filme foi lido uma única vez para as duas candidatas
     d = setup.get(f"/api/downloads/{out['opensubtitles:good']['download_id']}").json()
     assert d["status"] == "prepared" and d["evaluation"]["audio"]["mode"] == "aligned"      # pronta a instalar sem voltar a descarregar
     assert setup.post(f"/api/media/{mid}/candidates/audio-check", json={"results": res * 2}).status_code == 422     # no máximo 3 (quota)
+
+
+# ---- modo rigoroso -------------------------------------------------------------------------
+
+def test_rigorous_flags_uneven_film_that_the_normal_mode_calls_fine():
+    cues = make_cues(700, 3600, seed=9)
+    jump = lambda p, t0, d, ff="ffmpeg", *a, **k: audio_for(cues, t0, d, offset=0.0 if t0 < 1800 else 2.0)      # a 2.ª metade do filme está 2 s desfasada
+    normal = A.analyze("x", cues, 3600, extract=jump)
+    rig = A.analyze("x", cues, 3600, extract=jump, rigorous=True)
+    assert normal["mode"] != "uneven"
+    assert rig["mode"] == "uneven" and rig["uneven_windows"] >= 2 and "zonas" in rig["reason"] and rig["windows_total"] == A.RIGOR_WINDOWS
+    even = A.analyze("x", cues, 3600, extract=lambda p, t0, d, ff="ffmpeg", *a, **k: audio_for(cues, t0, d, offset=0.0), rigorous=True)
+    assert even["mode"] == "aligned" and even["agree"] >= 12 and even["residual_p90_s"] <= 0.3 and all("dev" in w for w in even["windows"] if w["offset"] is not None)
+    late = A.analyze("x", cues, 3600, extract=lambda p, t0, d, ff="ffmpeg", *a, **k: audio_for(cues, t0, d, offset=4.7), rigorous=True)
+    assert late["mode"] == "offset" and abs(abs(late["offset_s"]) - 4.7) < 0.3
+
+
+def test_audio_track_is_passed_to_ffmpeg_and_tracks_are_listed(monkeypatch):
+    seen = {}
+
+    class CP:
+        returncode = 0
+        stdout = np.zeros(A.SR * 10, dtype=np.int16).tobytes()
+
+    def fake_run(cmd, **kw):
+        seen.setdefault("cmds", []).append(cmd)
+        return CP()
+    monkeypatch.setattr(A.subprocess, "run", fake_run)
+    A._FILTER_CACHE.clear()
+    A.extract_window("/m/x.mkv", 10, 60, "ffmpeg", track=2)
+    ff = next(c for c in seen["cmds"] if c[0] == "ffmpeg")
+    assert "0:a:2" in ff and any(c[0] == "ffprobe" and "a:2" in c for c in seen["cmds"])
+    CP.stdout = json.dumps({"streams": [{"codec_name": "eac3", "channels": 6, "tags": {"language": "ger", "title": "Deutsch"}}, {"codec_name": "ac3", "channels": 6, "tags": {"language": "eng"}}]}).encode()
+    tr = A.list_audio_tracks("/m/x.mkv")
+    assert [t["lang"] for t in tr] == ["ger", "eng"] and tr[1]["index"] == 1 and tr[0]["channels"] == 6
+    A._FILTER_CACHE.clear()
