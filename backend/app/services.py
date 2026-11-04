@@ -858,8 +858,11 @@ class App:
                             "por isso só prova que a tradução manteve os tempos, não que a faixa esteja sincronizada com o áudio).")
         ev.notes.append(f"Traduzida de «{src or 'idioma desconhecido'}» para «{target}»; os tempos são os da legenda original. "
                         "Itálicos e formatação foram removidos. Reveja antes de usar.")
+        gst = getattr(deepl, "stats", None) or {}
         extra = {"translation": {"engine": self._engine_name(), "source_lang": src, "target": target, "characters": sent,
-                                  "source_file": source_name, "embedded": embedded}}
+                                  "source_file": source_name, "embedded": embedded,
+                                  **({"requests": gst.get("requests"), "invalid": gst.get("invalid"), "rate_limited": gst.get("rate_limited"),
+                                      "suspect_fixed": getattr(deepl, "suspect_fixed", 0), "suspect_left": getattr(deepl, "suspect_left", 0)} if gst else {})}}
         add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, {eng_label})", "info", media["id"])
         return self._finish_prepare(did, media, r, target, tv, ev, an, extra)
 

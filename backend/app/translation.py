@@ -282,6 +282,7 @@ class Gemini:
         """Um pedido. Devolve a lista traduzida, ou None se recusada/inválida (o chamador subdivide)."""
         system = (f"You are a professional subtitle translator. Translate each item from {SRC_NAMES.get(source or '', 'the source language')} into {LANG_NAMES[target]}. "
                   "The items are consecutive subtitle lines of one film, in order; use neighbouring lines for context, pronouns and tone, but translate EACH item separately. "
+                  "The context lines (previous and following) are for reference ONLY: never translate them and never include them in the answer. "
                   "Keep terms, names and the form of address consistent with the previous translations shown. " + self._address_rule(target) + " "
                   "Rules: return a JSON array of strings with EXACTLY the same number of items, same order; never merge, split, drop or add items; keep HTML tags such as <i></i> and "
                   "line breaks («\n») in place; keep names, numbers and sound-effect markers; keep it concise and natural for on-screen reading; do not add notes or explanations.")
@@ -291,6 +292,7 @@ class Gemini:
         if self.glossary:
             user["character_and_place_names"] = self.glossary
             user["names_note"] = "Keep these personal and place names exactly as written (do not translate or inflect them); translate every other word normally."
+        user["expected_item_count"] = len(items)
         user["items_to_translate"] = items
         inline = self._is_inline()
         safety = [] if self._level >= 2 else self.SAFETY
@@ -304,7 +306,8 @@ class Gemini:
         else:
             body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": json.dumps(user, ensure_ascii=False)}]}],
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
-                                         "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["translations"]}}}
+                                         "responseSchema": {"type": "OBJECT", "properties": {"translations": {"type": "ARRAY", "items": {"type": "STRING"},
+                                                                                              "minItems": str(len(items)), "maxItems": str(len(items))}}, "required": ["translations"]}}}
             if safety:
                 body["safetySettings"] = safety
             if self._level == 0:
