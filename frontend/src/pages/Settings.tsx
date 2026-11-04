@@ -1,8 +1,8 @@
 import { ReactNode, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUp, Eye, FolderOpen, FolderPlus, Loader2, Lock, Plus, ScanSearch, ShieldCheck, Trash2, Unlock, X } from "lucide-react";
+import { ArrowUp, Eraser, Eye, FolderOpen, FolderPlus, Loader2, Lock, Plus, ScanSearch, ShieldCheck, Trash2, Unlock, X } from "lucide-react";
 import { api, Library, Settings } from "../api";
-import { fmtDate } from "../lib";
+import { fmtDate, fmtSize } from "../lib";
 import { useMeta, useSettings, useStartJob } from "../hooks";
 import { Badge, Empty, Field, Modal, PageHeader, Skeleton, Toggle, useToast } from "../components/ui";
 
@@ -117,6 +117,8 @@ export default function SettingsPage() {
           </div>
         </Section>
 
+        <BackupsCard />
+
         <Section title="Scanner" hint="Reanálise incremental: só ficheiros novos ou alterados são processados de novo."
           actions={<RevalidateButton />}>
           <div className="mb-5"><Toggle checked={!!d.embedded_variant_scan} onChange={(v) => set("embedded_variant_scan", v)} disabled={!!d.generic_pt_variant}
@@ -150,6 +152,45 @@ export default function SettingsPage() {
         </div>
       )}
     </>
+  );
+}
+
+interface BackupSum { days: number; include_moved: boolean; total: { files: number; bytes: number }; restored: { files: number; bytes: number }; old: { files: number; bytes: number }; recent: { files: number; bytes: number };
+  moved: { files: number; bytes: number; eligible: { files: number; bytes: number } }; will_free: { files: number; bytes: number } }
+
+function BackupsCard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [days, setDays] = useState(30);
+  const [moved, setMoved] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const q = useQuery({ queryKey: ["backups", days, moved], queryFn: () => api.get<BackupSum>(`/backups?days=${days}&include_moved=${moved}`) });
+  const clean = useMutation({ mutationFn: () => api.post<{ deleted: number; freed_bytes: number }>("/backups/cleanup", { days, include_moved: moved }),
+    onSuccess: (r) => { setConfirm(false); toast("ok", `${r.deleted} cópias apagadas (${fmtSize(r.freed_bytes)} libertados).`); qc.invalidateQueries(); }, onError: (e: Error) => { setConfirm(false); toast("bad", e.message); } });
+  const d = q.data;
+  return (
+    <Section title="Cópias de segurança" hint="Cada alteração a uma legenda guarda o original em /data/backups (fora das pastas dos filmes: o Plex e o Bazarr não as veem). Aqui pode libertar espaço. Apagar uma cópia só tira a possibilidade de restaurar essa alteração; o histórico fica.">
+      {!d ? <Skeleton className="h-20" /> : (
+        <div className="space-y-4">
+          <div className="grid sm:grid-cols-4 gap-3 text-sm">
+            <div className="card bg-s2 p-3"><div className="label">Ocupado</div><div className="text-lg font-medium tabular-nums">{fmtSize(d.total.bytes)}</div><div className="text-xs text-mute">{d.total.files} ficheiros</div></div>
+            <div className="card bg-s2 p-3"><div className="label">De edições já restauradas</div><div className="text-lg font-medium tabular-nums">{fmtSize(d.restored.bytes)}</div><div className="text-xs text-mute">{d.restored.files} ficheiros</div></div>
+            <div className="card bg-s2 p-3"><div className="label">Com mais de {days} dias</div><div className="text-lg font-medium tabular-nums">{fmtSize(d.old.bytes)}</div><div className="text-xs text-mute">{d.old.files} ficheiros</div></div>
+            <div className="card bg-s2 p-3"><div className="label">Legendas movidas para backup</div><div className="text-lg font-medium tabular-nums">{fmtSize(d.moved.bytes)}</div><div className="text-xs text-mute">{d.moved.files} ficheiros · só aqui estão guardadas</div></div>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap text-sm">
+            <label className="flex items-center gap-2">Apagar as cópias com mais de<input className="input !w-20" type="number" min={0} max={3650} value={days} onChange={(e) => { setDays(Math.max(0, Number(e.target.value) || 0)); setConfirm(false); }} />dias</label>
+            <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-[rgb(229,160,13)]" checked={moved} onChange={(e) => { setMoved(e.target.checked); setConfirm(false); }} />Incluir as legendas movidas para backup (apaga-as de vez)</label>
+          </div>
+          <div className="text-xs text-mute">As cópias de edições já restauradas apagam-se sempre. As cópias recentes e as legendas movidas para backup ficam, a não ser que o peça.</div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {!confirm ? <button className="btn-ghost" disabled={d.will_free.files === 0} onClick={() => setConfirm(true)}><Eraser size={15} />{d.will_free.files ? `Libertar ${fmtSize(d.will_free.bytes)} (${d.will_free.files} ficheiros)…` : "Nada a limpar com estes critérios"}</button>
+              : <><button className="btn-danger" disabled={clean.isPending} onClick={() => clean.mutate()}>{clean.isPending && <Loader2 size={14} className="animate-spin" />}Confirmar: apagar {d.will_free.files} cópias ({fmtSize(d.will_free.bytes)})</button>
+                <button className="btn-ghost" onClick={() => setConfirm(false)}>Cancelar</button></>}
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 

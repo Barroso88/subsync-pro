@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import threading
+from stat import S_ISREG
 from dataclasses import replace
 import time
 from datetime import date, datetime, timezone
@@ -1021,6 +1022,7 @@ class App:
             return []
         sid = row["id"]
         done: list[str] = []
+        eids: list[int] = []
 
         def run(action: str, params: dict, label: str) -> None:
             nonlocal sid
@@ -1031,6 +1033,8 @@ class App:
                     done.append(f"{label}: não foi possível ({e})")
                 return                                              # 422 = nada a alterar
             res = self.sub_apply(sid, action, params, pv["base_hash"])
+            if res.get("edit_id"):
+                eids.append(res["edit_id"])
             if action == "convert" and res.get("target"):
                 new = self.db.one("SELECT id FROM subtitles WHERE path=? AND present=1", (os.path.join(os.path.dirname(final), res["target"]),))
                 if new:
@@ -1042,6 +1046,7 @@ class App:
             run("convert", {"fix_mojibake": True, "keep_original": False}, "convertida para SRT/UTF-8")
         sub = self.db.one("SELECT path FROM subtitles WHERE id=? AND present=1", (sid,))
         if not sub or not sub["path"].lower().endswith(".srt"):
+            self._merge_pipeline_edits(eids, done)
             return self._pipeline_report(media, final, done)
         if cfg.get("clean", True) or cfg.get("hi"):
             run("textfix", {"common": bool(cfg.get("clean", True)), "hi": bool(cfg.get("hi")), "style": False, "uppercase": False}, "texto limpo")
@@ -1049,6 +1054,7 @@ class App:
             run("durations", {}, "durações ajustadas")
         if cfg.get("reflow"):
             run("reflow", {}, "linhas reformatadas")
+        self._merge_pipeline_edits(eids, done)
         if cfg.get("audio", True) and media.get("duration"):
             try:
                 self.start_audio_sync(sid)
@@ -1057,9 +1063,30 @@ class App:
                 pass
         return self._pipeline_report(media, final, done)
 
+    def _merge_pipeline_edits(self, eids: list[int], labels: list[str]) -> None:
+        """Uma só cópia para toda a cadeia: fica a do original (1.º passo); as cópias intermédias e as linhas de histórico dos passos seguintes são removidas.
+        Restaurar repõe o original (e, se houve conversão para outro ficheiro, remove o .srt criado)."""
+        if len(eids) < 2:
+            return
+        first = self.db.one("SELECT * FROM subtitle_edits WHERE id=?", (eids[0],))
+        last = self.db.one("SELECT * FROM subtitle_edits WHERE id=?", (eids[-1],))
+        if not first or not last:
+            return
+        params = jloads(first["params"], {}) or {}
+        params["pipeline"] = [re.sub(r" \(\d+ falas\)$", "", l) for l in labels if "não foi possível" not in l and "fila" not in l]
+        self.db.execute("UPDATE subtitle_edits SET after_hash=?, params=? WHERE id=?", (last["after_hash"], json.dumps(params), first["id"]))
+        for eid in eids[1:]:
+            e = self.db.one("SELECT backup_path FROM subtitle_edits WHERE id=?", (eid,))
+            if e and e["backup_path"] and is_within(e["backup_path"], self.cfg.backup_dir) and e["backup_path"] != first["backup_path"]:
+                try:
+                    os.unlink(e["backup_path"])
+                except OSError:
+                    pass
+            self.db.execute("DELETE FROM subtitle_edits WHERE id=?", (eid,))
+
     def _pipeline_report(self, media: dict, final: str, done: list[str]) -> list[str]:
         if done:
-            add_event(self.db, "edit", f"Pipeline automático em {os.path.basename(final)}: " + "; ".join(done) + ". Cada passo tem cópia do original em «Alterações a legendas».", "info", media["id"])
+            add_event(self.db, "edit", f"Pipeline automático em {os.path.basename(final)}: " + "; ".join(done) + ". Fica uma só cópia do original em «Alterações a legendas» (restaurável).", "info", media["id"])
         return done
 
     # ---- origem das legendas (app / Bazarr / enviada / traduzida) ------------------------
@@ -2069,6 +2096,66 @@ class App:
         sub = {"library_id": e["library_id"], "path": real}
         self._rescan_dir(sub)
         return {"restored": True}
+
+    # ---- cópias de segurança: inventário e limpeza ----------------------------------------------
+    def _backup_inventory(self, days: int, include_moved: bool) -> list[dict]:
+        """Cada ficheiro de /data/backups com a classificação que decide se a limpeza o apaga.
+        restored = todas as edições que o usam já foram restauradas; moved = é a única cópia de uma legenda movida para backup (só se apaga se pedir);
+        outros (edições por restaurar e cópias de «substituir») só se apagam depois de `days` dias."""
+        root = self.cfg.backup_dir
+        if not root.exists():
+            return []
+        refs: dict[str, list[dict]] = {}
+        for e in self.db.query("SELECT id,action,backup_path,restored_at FROM subtitle_edits WHERE backup_path IS NOT NULL"):
+            refs.setdefault(e["backup_path"], []).append(dict(e))
+        limit = time.time() - max(0, days) * 86400
+        out = []
+        for p in root.iterdir():
+            try:
+                lst = p.lstat()
+            except OSError:
+                continue
+            if not S_ISREG(lst.st_mode):
+                continue                                              # nunca segue atalhos nem toca em pastas
+            rs = refs.get(str(p), [])
+            moved = any(r["action"] == "delete" and not r["restored_at"] for r in rs)
+            restored = bool(rs) and all(r["restored_at"] for r in rs)
+            old = lst.st_mtime < limit
+            if moved:
+                kind, eligible = "moved", include_moved and old
+            elif restored:
+                kind, eligible = "restored", True
+            else:
+                kind, eligible = ("old" if old else "recent"), old
+            out.append({"path": str(p), "size": lst.st_size, "kind": kind, "eligible": eligible})
+        return out
+
+    def backups_summary(self, days: int = 30, include_moved: bool = False) -> dict:
+        days = max(0, min(int(days), 3650))
+        inv = self._backup_inventory(days, include_moved)
+
+        def agg(items: list[dict]) -> dict:
+            return {"files": len(items), "bytes": sum(i["size"] for i in items)}
+        return {"days": days, "include_moved": include_moved, "total": agg(inv), "restored": agg([i for i in inv if i["kind"] == "restored"]),
+                "old": agg([i for i in inv if i["kind"] == "old"]), "recent": agg([i for i in inv if i["kind"] == "recent"]),
+                "moved": {**agg([i for i in inv if i["kind"] == "moved"]), "eligible": agg([i for i in inv if i["kind"] == "moved" and i["eligible"]])},
+                "will_free": agg([i for i in inv if i["eligible"]])}
+
+    def backups_cleanup(self, days: int = 30, include_moved: bool = False) -> dict:
+        days = max(0, min(int(days), 3650))
+        freed = files = 0
+        for i in self._backup_inventory(days, include_moved):
+            if not i["eligible"] or not is_within(i["path"], self.cfg.backup_dir):
+                continue
+            try:
+                os.unlink(i["path"])
+            except OSError:
+                continue
+            files += 1
+            freed += i["size"]
+        add_event(self.db, "cleanup", f"Limpeza de cópias de segurança: {files} ficheiros apagados ({freed // 1024} KB), com mais de {days} dias ou já restauradas"
+                  + (" (incluindo legendas movidas para backup)" if include_moved else ""))
+        return {"deleted": files, "freed_bytes": freed, "summary": self.backups_summary(days, include_moved)}
 
     # ---- legendas duplicadas (mesmo conteúdo, nomes diferentes) -----------------------
     @staticmethod

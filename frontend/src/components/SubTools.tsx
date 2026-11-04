@@ -369,7 +369,7 @@ export function EditHistory({ mediaId }: { mediaId: number }) {
       {q.data.map((e) => (
         <div key={e.id} className="card p-3 flex items-center gap-3 text-sm">
           <div className="min-w-0 flex-1"><div className="truncate font-mono text-xs">{e.name}</div>
-            <div className="text-xs text-mute">{ACTION[e.action] ?? e.action} · {new Date(e.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</div></div>
+            <div className="text-xs text-mute">{Array.isArray(e.params?.pipeline) ? `Tratamento automático (${e.params.pipeline.join(", ")})` : (ACTION[e.action] ?? e.action)} · {new Date(e.created_at).toLocaleString("pt-PT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</div></div>
           {e.restored_at ? <Badge tone="neutral">Restaurada</Badge> : !e.backup_exists ? <Badge tone="bad">Backup em falta</Badge>
             : <button className="btn-ghost !h-8" disabled={restore.isPending} onClick={() => restore.mutate({ id: e.id })}><RotateCcw size={13} />Restaurar</button>}
         </div>

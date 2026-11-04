@@ -777,6 +777,18 @@ def create_app(cfg: AppConfig | None = None, transport=None) -> FastAPI:
         core.audio_check_dismiss(sid)
         return {"ok": True}
 
+    class BackupCleanIn(BaseModel):
+        days: int = 30
+        include_moved: bool = False
+
+    @api.get("/backups")
+    def backups_summary(days: int = 30, include_moved: bool = False):
+        return core.backups_summary(days, include_moved)
+
+    @api.post("/backups/cleanup")
+    def backups_cleanup(b: BackupCleanIn):
+        return core.backups_cleanup(b.days, b.include_moved)
+
     class AudioSyncIn(BaseModel):
         track: int = 0
         rigorous: bool = True

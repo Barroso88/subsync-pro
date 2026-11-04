@@ -80,9 +80,10 @@ def test_pipeline_runs_steps_on_new_subtitle_with_backups(setup, monkeypatch):
     new = setup.ptfile.read_text("utf-8")                                            # agora UTF-8
     assert "Olá, você está bem?" in new and "Fulano" not in new
     eds = setup.get("/api/subtitle-edits", params={"media_id": mid}).json()
-    assert {e["action"] for e in eds} >= {"convert", "textfix"} and all(e["backup_exists"] for e in eds)
+    assert len(eds) == 1 and eds[0]["action"] == "convert" and eds[0]["backup_exists"]            # uma só linha e uma só cópia para a cadeia toda
+    assert eds[0]["params"]["pipeline"] == ["convertida para SRT/UTF-8", "texto limpo"]
     assert setup.core.db.one("SELECT 1 FROM events WHERE message LIKE 'Pipeline automático%'")
-    assert len(list(setup.core.cfg.backup_dir.iterdir())) == 2                       # um backup por passo, sem se sobreporem
+    assert len(list(setup.core.cfg.backup_dir.iterdir())) == 1                       # só a cópia do original
     for e in eds:                                                                    # tudo restaurável, do último para o primeiro
         assert setup.post(f"/api/subtitle-edits/{e['id']}/restore", json={"force": True}).status_code == 200
     assert setup.ptfile.read_bytes() == text.encode("cp1252")
@@ -163,3 +164,55 @@ def test_audio_track_is_passed_to_ffmpeg_and_tracks_are_listed(monkeypatch):
     tr = A.list_audio_tracks("/m/x.mkv")
     assert [t["lang"] for t in tr] == ["ger", "eng"] and tr[1]["index"] == 1 and tr[0]["channels"] == 6
     A._FILTER_CACHE.clear()
+
+
+# ---- pipeline com conversão para outro ficheiro + limpeza de cópias --------------------------
+
+def test_pipeline_ass_keeps_single_backup_and_restore_removes_created_srt(setup, monkeypatch):
+    mid, _ = prime(setup, monkeypatch, 0.0)
+    monkeypatch.setattr(A, "extract_window", lambda *a, **k: None)
+    ass = setup.dir / "Filme Teste (2024).es.ass"
+    ass_text = ("[Script Info]\nTitle: x\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+                "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Hola  ,  mundo !\n"
+                "Dialogue: 0,0:00:05.00,0:00:08.00,Default,,0,0,0,,Todo bien.\n")
+    ass.write_text(ass_text, "utf-8")
+    setup.core.scanner.scan_library(dict(setup.core.db.one("SELECT * FROM libraries WHERE id=1")), None, str(setup.dir), force_subs=True)
+    setup.put("/api/settings", json={"pipeline": {"enabled": True, "convert": True, "clean": True, "audio": False}})
+    done = setup.core._pipeline_after_install(setup.core.media_dict(mid), str(ass))
+    srt = setup.dir / "Filme Teste (2024).es.srt"
+    assert srt.exists() and not ass.exists() and "Hola, mundo!" in srt.read_text("utf-8") and len(done) == 2
+    eds = [e for e in setup.get("/api/subtitle-edits", params={"media_id": mid}).json() if e["name"].startswith("Filme Teste (2024).es")]
+    assert len(eds) == 1 and eds[0]["params"]["pipeline"] and len(list(setup.core.cfg.backup_dir.iterdir())) == 1
+    assert setup.post(f"/api/subtitle-edits/{eds[0]['id']}/restore", json={}).status_code == 200      # sem «forçar»: o hash final foi atualizado
+    assert ass.read_text("utf-8") == ass_text and not srt.exists()
+
+
+def test_backup_cleanup_rules(setup):
+    import os
+    import time as _t
+    core, bd = setup.core, setup.core.cfg.backup_dir
+    bd.mkdir(parents=True, exist_ok=True)
+
+    def mk(name, size, age_days, edit=None):
+        p = bd / name
+        p.write_bytes(b"x" * size)
+        os.utime(p, (_t.time() - age_days * 86400,) * 2)
+        if edit:
+            core.db.execute("INSERT INTO subtitle_edits(subtitle_id,media_id,library_id,path,action,params,backup_path,created_at,restored_at) VALUES(1,1,1,?,?,?,?,?,?)",
+                            ("/x/" + name, edit[0], "{}", str(p), "2026-01-01", edit[1]))
+        return p
+    recent, old, orphan_old = mk("recent.srt", 100, 1, ("textfix", None)), mk("old.srt", 200, 90, ("textfix", None)), mk("orphan.srt", 400, 90)
+    restored = mk("restored.srt", 800, 1, ("shift", "2026-02-02"))                       # já restaurada: apaga-se mesmo sendo recente
+    moved_old = mk("moved.srt", 1600, 90, ("delete", None))                              # a única cópia de uma legenda que moveu para backup
+    sm = setup.get("/api/backups", params={"days": 30}).json()
+    assert sm["total"] == {"files": 5, "bytes": 3100} and sm["restored"]["bytes"] == 800 and sm["old"]["files"] == 2 and sm["recent"]["files"] == 1
+    assert sm["moved"]["files"] == 1 and sm["moved"]["eligible"]["files"] == 0                # por omissão NÃO apaga as legendas movidas
+    assert sm["will_free"] == {"files": 3, "bytes": 1400}
+    r = setup.post("/api/backups/cleanup", json={"days": 30}).json()
+    assert r["deleted"] == 3 and r["freed_bytes"] == 1400 and recent.exists() and moved_old.exists() and not old.exists() and not restored.exists() and not orphan_old.exists()
+    ed = [e for e in setup.get("/api/subtitle-edits", params={"media_id": 1}).json() if e["name"] == "old.srt"]
+    assert ed and ed[0]["backup_exists"] is False                                        # o histórico mantém-se; só não se pode restaurar
+    assert setup.post("/api/backups/cleanup", json={"days": 0}).json()["deleted"] == 1       # days=0 apaga também a recente
+    assert moved_old.exists()
+    r = setup.post("/api/backups/cleanup", json={"days": 30, "include_moved": True}).json()
+    assert r["deleted"] == 1 and not moved_old.exists()
