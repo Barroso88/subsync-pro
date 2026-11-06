@@ -277,3 +277,32 @@ def test_audio_analysis_ignores_hearing_impaired_descriptions():
     out = App._speech_cues(cues)
     assert len(out) == 2 and out[0][0] == 1000 and out[1][0] == 6000
     assert len(App._speech_cues([Cue(0, 1000, "[MÚSICA]")])) == 1                                         # nada restaria: usa tudo em vez de falhar
+
+
+def test_providers_are_searched_in_parallel(setup):
+    import time as _t
+    core = setup.core
+    calls = []
+
+    class Slow:
+        supports_hash = False
+
+        def __init__(self, n):
+            self.n = n
+
+        def configured(self):
+            return True
+
+        def search(self, q):
+            calls.append((self.n, q.mode))
+            _t.sleep(0.3)
+            return []
+    setup.put("/api/settings", json={"providers": {**core.settings.get("providers"), "subtitlecat": {**core.settings.get("providers")["subtitlecat"], "enabled": True}}})
+    core.provider = lambda name: Slow(name)                                              # type: ignore[assignment]
+    mid = core.db.one("SELECT media_id FROM subtitles WHERE id=?", (setup.pt,))["media_id"]
+    t0 = _t.monotonic()
+    r = setup.post(f"/api/media/{mid}/search", json={"languages": ["en"], "sources": ["app"]})
+    dt = _t.monotonic() - t0
+    assert r.status_code == 200 and {n for n, _ in calls} >= {"opensubtitles", "subtitlecat"}
+    assert dt < 0.9, dt                                                                  # em série seriam ≥ 1,2 s (2 fornecedores × 2 passos × 0,3 s)
+    assert [t.split(":")[0] for t in r.json()["query"]["tried"]] == ["opensubtitles", "opensubtitles", "subtitlecat", "subtitlecat"]     # ordem de prioridade mantida

@@ -509,6 +509,7 @@ class App:
             steps.append(("hash", "só hash do ficheiro"))
         steps.append(("title", "só título, sem ano"))
         tried: list[str] = []
+        active = []
         for name, pcfg in sorted(s["providers"].items(), key=lambda kv: kv[1].get("priority", 99)):
             if not run_app or not pcfg.get("enabled") or name not in PROVIDERS:
                 continue
@@ -516,23 +517,37 @@ class App:
             if not p.configured():
                 errors.append({"provider": name, "message": "Fornecedor sem credenciais configuradas.", "auth": True})
                 continue
+            active.append((name, p))
+
+        def one(name: str, p) -> tuple[list[dict], list[str], list[dict]]:
+            res_, tried_, err_ = [], [], []
             try:
                 for mode, label in steps:
                     if mode == "hash" and not p.supports_hash:
                         continue
-                    qm = replace(q, mode=mode)
-                    found = p.search(qm)
-                    tried.append(f"{name}: {label} → {len(found)}")
+                    found = p.search(replace(q, mode=mode))
+                    tried_.append(f"{name}: {label} → {len(found)}")
                     if not found:
                         continue
                     for r in found:
                         r.found_by = label
                         ev = evaluate_metadata(media, r, hi_policy=s["hi_policy"], prefer_forced=s["prefer_forced"])
-                        results.append({"result": r.to_dict(), "evaluation": ev.to_dict()})
+                        res_.append({"result": r.to_dict(), "evaluation": ev.to_dict()})
                     break
             except ProviderError as e:
-                errors.append({"provider": name, "message": str(e), "auth": e.auth, "rate_limited": e.rate_limited,
-                               "retry_after": e.retry_after})
+                err_.append({"provider": name, "message": str(e), "auth": e.auth, "rate_limited": e.rate_limited, "retry_after": e.retry_after})
+            return res_, tried_, err_
+        if len(active) > 1:
+            # fornecedores em paralelo (cada um tem o seu próprio limite de ritmo): o tempo total passa a ser o do mais lento, não a soma
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(active)) as ex:
+                outs = list(ex.map(lambda np_: one(*np_), active))
+        else:
+            outs = [one(*np_) for np_ in active]
+        for res_, tried_, err_ in outs:                                # na ordem de prioridade
+            results.extend(res_)
+            tried.extend(tried_)
+            errors.extend(err_)
         if bz_future is not None:
             try:
                 found = bz_future.result()
