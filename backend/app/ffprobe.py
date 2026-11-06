@@ -122,3 +122,33 @@ def extract_subtitle_text(path: str, index: int, ffmpeg_bin: str = "ffmpeg", tim
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     return cp.stdout if cp.returncode == 0 and cp.stdout else None
+
+
+def extract_subtitle_windows(path: str, index: int, windows: list[tuple[float, float]], ffmpeg_bin: str = "ffmpeg", timeout: int = 90) -> bytes | None:
+    """Extrai só alguns TRECHOS de uma faixa de legenda de texto (início, duração em s) como um SRT com os tempos ORIGINAIS do filme.
+    Procura no ficheiro (-ss antes do -i, com -copyts) em vez de o ler todo: muito mais rápido em ficheiros grandes. Só leitura; sem shell."""
+    if not os.path.isabs(path) or not isinstance(index, int) or index < 0 or not windows:
+        return None
+    from .subtitles.parser import parse_srt
+    seen: set[tuple[int, int, str]] = set()
+    cues: list[tuple[int, int, str]] = []
+    for start, dur in windows:
+        cmd = [ffmpeg_bin, "-v", "error", "-nostdin", "-ss", f"{max(0.0, start):.2f}", "-copyts", "-i", path, "-to", f"{start + dur:.2f}", "-map", f"0:{index}", "-f", "srt", "-"]
+        try:
+            cp = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        if not cp.stdout:
+            continue
+        for c in parse_srt(cp.stdout.decode("utf-8", "ignore")).cues:
+            if start * 1000 <= c.start_ms < (start + dur) * 1000 and (c.start_ms, c.end_ms, c.text) not in seen:
+                seen.add((c.start_ms, c.end_ms, c.text))
+                cues.append((c.start_ms, c.end_ms, c.text))
+    if not cues:
+        return None
+    cues.sort()
+
+    def ts(ms: int) -> str:
+        s_, ms_ = divmod(ms, 1000)
+        return f"{s_ // 3600:02d}:{(s_ % 3600) // 60:02d}:{s_ % 60:02d},{ms_:03d}"
+    return "\n".join(f"{i}\n{ts(a)} --> {ts(b)}\n{t}\n" for i, (a, b, t) in enumerate(cues, 1)).encode("utf-8")

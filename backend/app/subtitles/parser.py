@@ -20,6 +20,7 @@ class ParsedSub:
     cues: list[Cue] = field(default_factory=list)
     errors: int = 0          # blocos mal formados
     encoding: str = "utf-8"
+    windows: list | None = None     # [(início_ms, fim_ms)] quando só se leu parte do filme (referência extraída por trechos)
 
     @property
     def text(self) -> str:

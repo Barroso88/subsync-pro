@@ -242,13 +242,16 @@ def evaluate_content(ev: Evaluation, media: dict, parsed: ParsedSub, analysis: A
 
     if reference:
         ref_name, ref = reference
-        res: AlignResult = align_with_reference(parsed.cues, ref.cues)
+        cand = parsed.cues
+        if ref.windows:                                      # referência lida só por trechos: compara-se a candidata nesses mesmos trechos
+            cand = [c for c in parsed.cues if any(a_ <= c.start_ms < b_ for a_, b_ in ref.windows)]
+        res: AlignResult = align_with_reference(cand, ref.cues)
         if not res.ok:
             ev.sync = "inconclusive"
             ev.notes.append(f"Comparação com a referência «{ref_name}» inconclusiva: {res.reason}.")
         else:
             ev.alignment = {"reference": ref_name, "offset_ms": res.offset_ms, "match_ratio": res.match_ratio,
-                            "drift_ms": res.drift_ms, "events_compared": res.compared}
+                            "drift_ms": res.drift_ms, "events_compared": res.compared, **({"windows": len(ref.windows)} if ref.windows else {})}
             if res.match_ratio >= 0.6 and abs(res.offset_ms) <= 1500 and abs(res.drift_ms) <= 2000:
                 ev.sync = "validated_reference"
                 add(f"Alinhada com a legenda de referência «{ref_name}» ({round(res.match_ratio * 100)} % dos eventos)", 20)

@@ -607,24 +607,39 @@ class App:
         tracks = [t for t in tracks if "comment" not in (t["title"] or "").lower()]
         tracks.sort(key=lambda t: (t["lang"] != candidate_lang, t["lang"] != "en", t["stream_index"]))
         for t in tracks[:2]:
-            hit = self._embedded_parsed(media, t["stream_index"], stt)
+            hit = self._embedded_parsed(media, t["stream_index"], stt, fast=True)
             if hit:
                 return f"faixa embutida #{t['stream_index']} ({t['lang'] or '?'})", hit
         return None
 
-    def _embedded_parsed(self, media: dict, stream_index: int, stt=None) -> "ParsedSub | None":
-        """Extrai (ffmpeg, uma vez; em cache) uma faixa de texto embutida e devolve as falas, ou None se não for utilizável (menos de 30 falas)."""
+    REF_WINDOWS = ((0.08, 180), (0.22, 180), (0.38, 180), (0.54, 180), (0.70, 180), (0.86, 180))      # (posição no filme, duração em s)
+
+    def _embedded_parsed(self, media: dict, stream_index: int, stt=None, fast: bool = False) -> "ParsedSub | None":
+        """Extrai (ffmpeg, uma vez; em cache) uma faixa de texto embutida e devolve as falas, ou None se não for utilizável (menos de 30 falas).
+        fast=True (avaliar um download): lê só 6 trechos de 3 min espalhados pelo filme (procura no ficheiro em vez de o ler todo; ≈5× mais rápido
+        num filme de 6 GB) — chega para estimar offset e deriva. Sem duração conhecida, ou se os trechos não chegarem, lê a faixa toda."""
         try:
             stt = stt or os.stat(media["path"])
         except OSError:
             return None
-        key = (media["id"], stream_index, stt.st_size, int(stt.st_mtime))
+        dur = float(media.get("duration") or 0)
+        use_windows = fast and dur >= 20 * 60
+        key = (media["id"], stream_index, stt.st_size, int(stt.st_mtime), use_windows)
         with self._ref_lock:
             hit = self._ref_cache.get(key)
         if hit is None:
-            data = fp.extract_subtitle_text(media["path"], stream_index, self.cfg.ffmpeg_bin)
-            parsed = parse_bytes(data, ".srt") if data else None
-            hit = parsed if parsed and len(parsed.cues) >= 30 else False
+            hit = False
+            if use_windows:
+                wins = [(round(dur * f, 1), float(d)) for f, d in self.REF_WINDOWS]
+                data = fp.extract_subtitle_windows(media["path"], stream_index, wins, self.cfg.ffmpeg_bin)
+                parsed = parse_bytes(data, ".srt") if data else None
+                if parsed and len(parsed.cues) >= 30:
+                    parsed.windows = [(int(a * 1000), int((a + d) * 1000)) for a, d in wins]
+                    hit = parsed
+            if not hit:
+                data = fp.extract_subtitle_text(media["path"], stream_index, self.cfg.ffmpeg_bin)
+                parsed = parse_bytes(data, ".srt") if data else None
+                hit = parsed if parsed and len(parsed.cues) >= 30 else False
             with self._ref_lock:
                 self._ref_cache[key] = hit
                 while len(self._ref_cache) > self._REF_CACHE_MAX:

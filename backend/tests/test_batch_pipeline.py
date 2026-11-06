@@ -306,3 +306,47 @@ def test_providers_are_searched_in_parallel(setup):
     assert r.status_code == 200 and {n for n, _ in calls} >= {"opensubtitles", "subtitlecat"}
     assert dt < 0.9, dt                                                                  # em série seriam ≥ 1,2 s (2 fornecedores × 2 passos × 0,3 s)
     assert [t.split(":")[0] for t in r.json()["query"]["tried"]] == ["opensubtitles", "opensubtitles", "subtitlecat", "subtitlecat"]     # ordem de prioridade mantida
+
+
+# ---- referência embutida por trechos (rápida) -----------------------------------------------
+
+import shutil as _shutil
+import subprocess as _sp
+
+import pytest as _pytest
+
+
+@_pytest.mark.skipif(not _shutil.which("ffmpeg"), reason="ffmpeg em falta")
+def test_windowed_subtitle_extraction_keeps_original_timestamps(tmp_path):
+    from app import ffprobe as fp
+    cues = [(5000 + i * 4000, 7000 + i * 4000, f"Linha {i} aos {5000 + i * 4000}") for i in range(370)]               # ≈ 25 min
+    srt = tmp_path / "s.srt"
+    def fmt(ms):
+        s, m = divmod(ms, 1000)
+        return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d},{m:03d}"
+    srt.write_text("\n".join(f"{i}\n{fmt(a)} --> {fmt(b)}\n{t}\n" for i, (a, b, t) in enumerate(cues, 1)), "utf-8")
+    mkv = tmp_path / "t.mkv"
+    r = _sp.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1500:size=64x64:rate=1", "-f", "lavfi", "-i", "sine=duration=1500",
+                 "-i", str(srt), "-map", "0:v", "-map", "1:a", "-map", "2", "-c:v", "mpeg4", "-c:a", "aac", "-c:s", "srt", str(mkv)], capture_output=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    wins = [(120.0, 60.0), (700.0, 60.0), (1300.0, 60.0)]
+    data = fp.extract_subtitle_windows(str(mkv), 2, wins)
+    got = parse_srt(data.decode("utf-8")).cues
+    assert 40 <= len(got) <= 50 and all(any(w0 * 1000 <= c.start_ms < (w0 + d) * 1000 for w0, d in wins) for c in got)      # só dos trechos pedidos
+    for c in got:
+        assert f"aos {c.start_ms}" in c.text                                      # o tempo é o ORIGINAL (a mesma fala nunca mudou de instante)
+    assert fp.extract_subtitle_windows("relativo.mkv", 2, wins) is None and fp.extract_subtitle_windows(str(mkv), 2, []) is None
+
+
+def test_evaluator_compares_only_inside_reference_windows():
+    from app.evaluator import Evaluation, evaluate_content
+    from app.subtitles.parser import Cue, ParsedSub, analyze
+    truth = make_cues(400, 1600, seed=3)                                                           # falas irregulares (como numa legenda real)
+    wins = [(100_000, 280_000), (700_000, 880_000), (1_200_000, 1_380_000)]
+    ref = ParsedSub("srt", [Cue(a, b, "x") for a, b in truth if any(w0 <= a < w1 for w0, w1 in wins)], windows=wins)
+    cand = ParsedSub("srt", [Cue(a, b, "olá") for a, b in truth])                                    # a candidata cobre o filme todo
+    an = analyze(cand, 1650.0, size=1000)
+    ev = Evaluation(score=50, compat="probable", sync="not_confirmed")
+    ev = evaluate_content(ev, {"duration": 1650.0}, cand, an, ("faixa embutida #2 (en)", ref))
+    assert ev.sync == "validated_reference" and ev.alignment["windows"] == 3 and ev.alignment["match_ratio"] >= 0.95
+    assert ev.alignment["events_compared"] < 200                                                    # só as falas dos trechos, não as 400
