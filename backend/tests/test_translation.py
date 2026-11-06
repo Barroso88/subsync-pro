@@ -626,3 +626,28 @@ def test_translate_forced_embedded_track_is_saved_as_forced_and_never_counts_as_
     inst = client.post(f"/api/downloads/{dl['id']}/install", json={"policy": "fail"}).json()
     assert inst["dest_path"].endswith(".pt-PT.forced.srt")
     assert client.get("/api/media", params={"status": "missing"}).json()["total"] >= 1        # a forçada não cobre pt-PT: E02 continua em falta
+
+
+def test_translate_existing_external_subtitle_creates_new_file_and_keeps_original(client):
+    client.put("/api/settings", json={"translation": {"enabled": True, "auto_fallback": False, "source_languages": ["en", "fr"]}})
+    item = e2(client)
+    import os
+    src = os.path.join(os.path.dirname(item["path"]), os.path.splitext(os.path.basename(item["path"]))[0] + ".fr.srt")
+    open(src, "w", encoding="utf-8").write(make_srt(120, 30_000, lang="en"))
+    wait_job(client, client.post("/api/scan", json={}).json()["job_id"])
+    sid = client.core.db.one("SELECT id FROM subtitles WHERE path=? AND kind='external'", (src,))["id"]
+    before = open(src, "rb").read()
+    assert client.post(f"/api/media/{item['id']}/translate-subtitle/start", json={"subtitle_id": 999999, "target": "pt-PT"}).status_code == 404
+    assert client.post(f"/api/media/{item['id']}/translate-subtitle/start", json={"subtitle_id": sid, "target": "fr"}).status_code == 400          # já em fr
+    r = client.post(f"/api/media/{item['id']}/translate-subtitle/start", json={"subtitle_id": sid, "target": "pt-PT"})
+    assert r.status_code == 202, r.text
+    j = wait_job(client, r.json()["job_id"])
+    assert j["status"] == "done", j
+    dl = j["result"]
+    assert dl["status"] == "prepared" and dl["provider"] == "external" and dl["dest_path"].endswith("S01E02.pt-PT.srt")
+    ev = dl["evaluation"]
+    assert ev["translation"]["external"] and ev["translation"]["source_lang"] in ("fr", "en") and any("já existente" in n for n in ev["notes"])
+    assert open(src, "rb").read() == before                                                       # o original nunca é tocado
+    inst = client.post(f"/api/downloads/{dl['id']}/install", json={"policy": "fail"}).json()
+    cues = parse_srt(open(inst["dest_path"], encoding="utf-8").read()).cues
+    assert len(cues) == 120 and cues[0].text.startswith("Tradução:") and cues[0].start_ms == 10_000

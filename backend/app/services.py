@@ -845,12 +845,14 @@ class App:
         try:
             if p.get("embedded_sub_id"):
                 return self.translate_embedded(p["media_id"], p["embedded_sub_id"], p["target"], ctx)
+            if p.get("external_sub_id"):
+                return self.translate_external(p["media_id"], p["external_sub_id"], p["target"], ctx)
             return self.translate_prepare(p["media_id"], p["result"], p["target"], ctx)
         except ServiceError as e:
             raise JobError(str(e)) from e      # a mensagem chega à tarefa (e ao utilizador) tal como está
 
     def _translate_finish(self, did: int, media: dict, r: SubtitleResult, src: str | None, target: str, v, source_name: str, deepl, ctx: "JobContext | None",
-                          reference: "tuple[str, Any] | None" = None, embedded: bool = False) -> dict:
+                          reference: "tuple[str, Any] | None" = None, embedded: bool = False, external_name: str | None = None) -> dict:
         """Traduz as falas já validadas de `v`, revalida, avalia e deixa em «por confirmar». Usado pela legenda descarregada e pela faixa embutida."""
         from .subtitles.parser import analyze
         from .evaluator import Factor
@@ -894,6 +896,9 @@ class App:
             ev.notes.append(f"Mesmo depois de repetidas, {left} falas continuam parecidas com o original ou muito curtas: reveja-as (podem ser nomes, letras de música ou palavras iguais nos dois idiomas).")
         if r.forced:
             ev.notes.append("Faixa FORÇADA: só tem as partes em língua estrangeira. Fica guardada como «.forced» e não conta como legenda completa do idioma.")
+        if external_name:
+            ev.notes.append(f"Traduzida a partir da legenda já existente «{external_name}»: os tempos são os dessa legenda (a «referência» é a própria legenda de origem, "
+                            "por isso só prova que a tradução manteve os tempos, não que a legenda esteja sincronizada com o áudio).")
         if embedded:
             ev.notes.append("Traduzida a partir de uma faixa de legenda embutida no próprio vídeo: os tempos são os dessa faixa (a «referência» é a própria faixa de origem, "
                             "por isso só prova que a tradução manteve os tempos, não que a faixa esteja sincronizada com o áudio).")
@@ -901,7 +906,7 @@ class App:
                         "Itálicos e formatação foram removidos. Reveja antes de usar.")
         gst = getattr(deepl, "stats", None) or {}
         extra = {"translation": {"engine": self._engine_name(), "source_lang": src, "target": target, "characters": sent,
-                                  "source_file": source_name, "embedded": embedded,
+                                  "source_file": source_name, "embedded": embedded, **({"external": True} if external_name else {}),
                                   **({"requests": gst.get("requests"), "invalid": gst.get("invalid"), "rate_limited": gst.get("rate_limited"),
                                       "suspect_fixed": getattr(deepl, "suspect_fixed", 0), "suspect_left": getattr(deepl, "suspect_left", 0)} if gst else {})}}
         add_event(self.db, "translation", f"Tradução {src or '?'}→{target} ({sent} caracteres, {eng_label})", "info", media["id"])
@@ -952,6 +957,58 @@ class App:
         except (InvalidDownload, ServiceError, DeepLError) as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
             add_event(self.db, "translation", f"Tradução da faixa embutida falhou: {e}", "error", media_id)
+            raise ServiceError(str(e), getattr(e, "status", 502 if isinstance(e, DeepLError) else 422))
+        except Exception as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
+            raise
+
+    def start_translate_subtitle(self, media_id: int, sub_id: int, target: str) -> int:
+        """Traduz uma legenda já existente do filme: faixa embutida (extração com ffmpeg) ou ficheiro externo (lido da pasta)."""
+        row = self.db.one("SELECT kind FROM subtitles WHERE id=? AND media_id=? AND present=1", (sub_id, media_id))
+        if not row:
+            raise ServiceError("Legenda não encontrada.", 404)
+        if row["kind"] == "embedded":
+            return self.start_translate_embedded(media_id, sub_id, target)
+        if not self.settings.get("translation")["enabled"]:
+            raise ServiceError("A tradução automática está desativada (Definições → Idiomas).", 403)
+        if target not in self._targets():
+            raise ServiceError("Idioma de destino não suportado para tradução.")
+        self._deepl()
+        sub = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='external' AND present=1", (sub_id, media_id))
+        if sub["status"] != "ok" or not sub["text_based"]:
+            raise ServiceError("Só se traduzem legendas de texto válidas.", 422)
+        if normalize_lang(sub["lang"]) == target:
+            raise ServiceError("A legenda já está no idioma de destino.")
+        m = self.db.one("SELECT title FROM media_items WHERE id=?", (media_id,))
+        return self.jobs.submit("translate", f"Traduzir {os.path.basename(sub['path'])} para {target}: {m['title'] if m else media_id}",
+                                {"media_id": media_id, "external_sub_id": sub_id, "target": target}, dedupe=True)
+
+    def translate_external(self, media_id: int, sub_id: int, target: str, ctx: "JobContext | None" = None) -> dict:
+        media = self.media_dict(media_id)
+        sub = self.db.one("SELECT * FROM subtitles WHERE id=? AND media_id=? AND kind='external' AND present=1", (sub_id, media_id))
+        if not sub or sub["status"] != "ok" or not sub["text_based"]:
+            raise ServiceError("Legenda não encontrada ou não é de texto.", 404)
+        if not self.settings.get("translation")["enabled"] or target not in self._targets():
+            raise ServiceError("Tradução desativada ou idioma de destino não suportado.", 403)
+        src = normalize_lang(sub["lang"])
+        deepl = self._deepl()
+        try:
+            real = require_within(sub["path"], [l["path"] for l in self.libraries()])
+        except PathSecurityError:
+            raise ServiceError("A legenda está fora das bibliotecas.", 403)
+        name = os.path.basename(real)
+        r = SubtitleResult(provider="external", file_id=f"sub{sub_id}", language=src, release=Path(media["path"]).stem, file_name=name[:200],
+                           forced=bool(sub["forced"]), hearing_impaired=bool(sub["hi"]), format=os.path.splitext(name)[1].lstrip(".").lower() or "srt", found_by="legenda existente")
+        did = self.db.execute(
+            "INSERT INTO downloads(media_id,provider,provider_file_id,lang,release,file_name,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (media_id, "external", f"sub{sub_id}", target, r.release[:200], name[:200], "preparing", now())).lastrowid
+        try:
+            v = validate_download(name, Path(real).read_bytes(), media)
+            ref = (f"legenda existente «{name}»", v.parsed) if len(v.parsed.cues) >= 30 else None
+            return self._translate_finish(did, media, r, src, target, v, name, deepl, ctx, reference=ref, external_name=name)
+        except (InvalidDownload, ServiceError, DeepLError, OSError) as e:
+            self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e)), did))
+            add_event(self.db, "translation", f"Tradução da legenda existente falhou: {e}", "error", media_id)
             raise ServiceError(str(e), getattr(e, "status", 502 if isinstance(e, DeepLError) else 422))
         except Exception as e:
             self.db.execute("UPDATE downloads SET status='failed', error=? WHERE id=?", (scrub(str(e))[:300], did))
